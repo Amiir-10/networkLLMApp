@@ -1,5 +1,6 @@
 import json
 import subprocess
+import time
 from pathlib import Path
 from typing import Protocol
 
@@ -42,13 +43,18 @@ class ContainerlabLabDriver:
         topology: dict = {"nodes": {}, "links": []}
         iface_index: dict[tuple[str, str], int] = {}
         for node in scenario.nodes:
-            clab_node: dict = {
-                "kind": "linux",
-                "image": node.image,
-                "cmd": "sleep infinity",
-            }
             if node.role == "firewall":
-                clab_node["sysctls"] = {"net.ipv4.ip_forward": 1}
+                clab_node: dict = {
+                    "kind": "linux",
+                    "image": node.image,
+                    "sysctls": {"net.ipv4.ip_forward": 1},
+                }
+            else:
+                clab_node = {
+                    "kind": "linux",
+                    "image": node.image,
+                    "cmd": "sleep infinity",
+                }
             topology["nodes"][node.id] = clab_node
             for idx, iface in enumerate(node.interfaces, start=1):
                 iface_index[(node.id, iface.to)] = idx
@@ -82,10 +88,21 @@ class ContainerlabLabDriver:
             timeout=timeout,
         )
 
+    def _wait_for_firewalld(self, container: str, timeout: int = 30) -> bool:
+        for _ in range(timeout * 2):
+            r = self._docker_exec(container, ["firewall-cmd", "--state"], timeout=5)
+            if r.returncode == 0 and "running" in r.stdout:
+                return True
+            time.sleep(0.5)
+        return False
+
     def _configure_node(self, scenario_name: str, scenario: Scenario) -> list[str]:
         warnings: list[str] = []
         for node in scenario.nodes:
             container = f"clab-{scenario_name}-{node.id}"
+            if node.role == "firewall":
+                if not self._wait_for_firewalld(container):
+                    warnings.append(f"{container}: firewalld did not become ready in time")
             for idx, iface in enumerate(node.interfaces, start=1):
                 eth = f"eth{idx}"
                 r1 = self._docker_exec(container, ["ip", "addr", "add", iface.ip, "dev", eth])
@@ -103,6 +120,15 @@ class ContainerlabLabDriver:
                             f"{container}: ip route replace default via {iface.gateway} -> {r3.stderr.strip()}"
                         )
         return warnings
+
+    def get_mgmt_ip(self, scenario_name: str, node_id: str) -> str | None:
+        container = f"clab-{scenario_name}-{node_id}"
+        result = subprocess.run(
+            ["docker", "inspect", container, "--format",
+             "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
 
     def start(self, scenario: Scenario) -> dict:
         topology_file = self._topology_file(scenario.name)

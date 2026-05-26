@@ -5,4 +5,5 @@ __pycache__/
 *.log
 labs/
 clab-*/
+data/
 .DS_Store
