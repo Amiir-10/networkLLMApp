@@ -18,8 +18,9 @@ done
 
 firewall-cmd --zone=trusted --add-interface=eth0 --permanent 2>/dev/null || true
 firewall-cmd --set-default-zone=public
-firewall-cmd --zone=public --add-interface=eth1 --permanent 2>/dev/null || true
-firewall-cmd --zone=public --add-interface=eth2 --permanent 2>/dev/null || true
+for iface in $(ls /sys/class/net/ | grep -E '^eth[1-9][0-9]*$' | sort); do
+    firewall-cmd --zone=public --add-interface="$iface" --permanent 2>/dev/null || true
+done
 firewall-cmd --zone=public --add-port=8080/tcp --permanent 2>/dev/null || true
 
 firewall-cmd --new-policy=fwd-filter --permanent 2>/dev/null || true
