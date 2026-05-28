@@ -1,4 +1,3 @@
-import time
 import json
 
 import httpx
@@ -6,6 +5,8 @@ import httpx
 from app.lab.models import Scenario
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
+
+MAX_TOOL_ITERATIONS = 3
 
 TOOLS = [
     {
@@ -80,14 +81,6 @@ TOOLS = [
         },
     },
 ]
-
-SYSTEM_PROMPT = """You are a network security assistant controlling a simulated network topology.
-You manage a firewall (running firewalld) that sits between network segments.
-When the user asks you to block, allow, or test traffic, use the appropriate tool.
-When the user asks about the network state, use describe_state.
-Always use node IDs (like pc1, pc2) not IP addresses when calling tools.
-Be concise in your responses."""
-
 
 def _node_ip_map(scenario: Scenario) -> dict[str, str]:
     result = {}

@@ -1,27 +1,37 @@
+import json
 import time
 from pathlib import Path
 
 import yaml
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app.lab.driver import ContainerlabLabDriver, LabAlreadyRunning, LabNotFound
 from app.lab.models import Scenario
 from app.firewall.driver import FirewalldDriver
-from app.chat import call_ollama, validate_node_args, dispatch_tool, SYSTEM_PROMPT
+from app.chat import call_ollama, validate_node_args, dispatch_tool, MAX_TOOL_ITERATIONS
+from app.prompts import SYSTEM_PROMPT
 from app.metrics import MetricsCollector
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCENARIO_DIR = REPO_ROOT / "scenarios"
 LAB_WORK_DIR = REPO_ROOT / "labs"
 
-app = FastAPI(title="networkLLMApp", version="0.0.3")
+app = FastAPI(title="networkLLMApp", version="0.0.5")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 lab_driver = ContainerlabLabDriver(work_dir=LAB_WORK_DIR)
 metrics = MetricsCollector()
 
 _active_scenario: Scenario | None = None
 _firewall_driver: FirewalldDriver | None = None
 _active_model: str = "llama3.1:8b"
+_conversation_history: list[dict] = []
 
 
 @app.get("/health")
@@ -43,7 +53,8 @@ def _load_scenario(scenario_name: str) -> Scenario:
 
 @app.post("/lab/start/{scenario_name}")
 def lab_start(scenario_name: str) -> dict:
-    global _active_scenario, _firewall_driver
+    global _active_scenario, _firewall_driver, _conversation_history
+    _conversation_history = []
     scenario = _load_scenario(scenario_name)
     try:
         result = lab_driver.start(scenario)
@@ -74,7 +85,8 @@ def lab_start(scenario_name: str) -> dict:
 
 @app.post("/lab/stop/{scenario_name}")
 def lab_stop(scenario_name: str) -> dict:
-    global _active_scenario, _firewall_driver
+    global _active_scenario, _firewall_driver, _conversation_history
+    _conversation_history = []
     try:
         lab_driver.stop(scenario_name)
     except LabNotFound as exc:
@@ -96,6 +108,13 @@ class ChatRequest(BaseModel):
     model: str = "llama3.1:8b"
 
 
+@app.post("/chat/reset")
+def chat_reset() -> dict:
+    global _conversation_history
+    _conversation_history = []
+    return {"status": "cleared"}
+
+
 @app.post("/chat")
 def chat(req: ChatRequest) -> dict:
     global _active_model
@@ -105,79 +124,126 @@ def chat(req: ChatRequest) -> dict:
         raise HTTPException(status_code=400, detail="Firewall driver not connected.")
 
     _active_model = req.model
-    interaction = metrics.start_interaction(req.model, req.message)
+    _conversation_history.append({"role": "user", "content": req.message})
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": req.message},
-    ]
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + _conversation_history
 
-    try:
-        ollama_resp = call_ollama(req.model, messages)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Ollama error: {e}")
+    all_tool_results: list[dict] = []
+    first_llm_at: float | None = None
+    prompt_sent_at = time.time()
 
-    interaction["llm_response_at"] = time.time()
-    interaction["prompt_eval_count"] = ollama_resp.get("prompt_eval_count")
-    interaction["eval_count"] = ollama_resp.get("eval_count")
+    for iteration in range(MAX_TOOL_ITERATIONS + 1):
+        print(
+            f"[chat] iter={iteration} sending {len(messages)} messages; "
+            f"last role={messages[-1].get('role')!r}",
+            flush=True,
+        )
+        if iteration > 0:
+            print(
+                f"[chat] iter={iteration} tail messages: "
+                f"{json.dumps(messages[-3:], default=str)[:1500]}",
+                flush=True,
+            )
 
-    msg = ollama_resp.get("message", {})
-    tool_calls = msg.get("tool_calls", [])
+        interaction = metrics.start_interaction(req.model, req.message)
 
-    if not tool_calls:
-        interaction["prose_response"] = msg.get("content", "")
+        try:
+            ollama_resp = call_ollama(req.model, messages)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Ollama error: {e}")
+
+        now = time.time()
+        if first_llm_at is None:
+            first_llm_at = now
+        interaction["llm_response_at"] = now
+        interaction["prompt_eval_count"] = ollama_resp.get("prompt_eval_count")
+        interaction["eval_count"] = ollama_resp.get("eval_count")
+
+        msg = ollama_resp.get("message", {})
+        tool_calls = msg.get("tool_calls", [])
+        print(
+            f"[chat] iter={iteration} response role={msg.get('role')!r} "
+            f"content={msg.get('content', '')!r} tool_calls={len(tool_calls)} "
+            f"done_reason={ollama_resp.get('done_reason')!r}",
+            flush=True,
+        )
+        if iteration > 0 and not tool_calls and not msg.get("content"):
+            print(
+                f"[chat] iter={iteration} FULL RESPONSE (empty content + no tool calls): "
+                f"{json.dumps(ollama_resp, default=str)[:2000]}",
+                flush=True,
+            )
+
+        if not tool_calls:
+            interaction["prose_response"] = msg.get("content", "")
+            interaction["execution_success"] = True
+            metrics.record(interaction)
+
+            assistant_content = msg.get("content", "")
+            _conversation_history.append({"role": "assistant", "content": assistant_content})
+
+            return {
+                "response": assistant_content,
+                "tool_calls": all_tool_results,
+                "metrics": {
+                    "llm_latency_s": round(first_llm_at - prompt_sent_at, 3),
+                    "total_latency_s": round(time.time() - prompt_sent_at, 3),
+                },
+            }
+
+        messages.append(msg)
+
+        for tc in tool_calls:
+            fn = tc.get("function", {})
+            name = fn.get("name", "")
+            args = fn.get("arguments", {})
+
+            per_tool = metrics.start_interaction(req.model, req.message)
+            per_tool["tool_call"] = name
+            per_tool["tool_args"] = str(args)
+
+            validation_err = validate_node_args(args, _active_scenario)
+            if validation_err:
+                per_tool["validation_passed"] = False
+                per_tool["validation_error"] = validation_err
+                per_tool["execution_success"] = False
+                metrics.record(per_tool)
+                tool_output = {"error": validation_err}
+                all_tool_results.append({"tool": name, "error": validation_err})
+            else:
+                per_tool["validation_passed"] = True
+                try:
+                    tool_result = dispatch_tool(
+                        name, args, _active_scenario, _firewall_driver, lab_driver,
+                    )
+                    per_tool["tool_executed_at"] = time.time()
+                    per_tool["execution_result"] = str(tool_result)[:500]
+                    per_tool["execution_success"] = True
+                    metrics.record(per_tool)
+                    tool_output = tool_result
+                    all_tool_results.append({"tool": name, "args": args, "result": tool_result})
+                except Exception as e:
+                    per_tool["tool_executed_at"] = time.time()
+                    per_tool["execution_result"] = str(e)[:500]
+                    per_tool["execution_success"] = False
+                    metrics.record(per_tool)
+                    tool_output = {"error": str(e)}
+                    all_tool_results.append({"tool": name, "args": args, "error": str(e)})
+
+            messages.append({"role": "tool", "content": json.dumps(tool_output)})
+
         interaction["execution_success"] = True
         metrics.record(interaction)
-        return {
-            "response": msg.get("content", ""),
-            "tool_calls": [],
-            "metrics": {
-                "llm_latency_s": round(interaction["llm_response_at"] - interaction["prompt_sent_at"], 3),
-            },
-        }
 
-    results = []
-    for tc in tool_calls:
-        fn = tc.get("function", {})
-        name = fn.get("name", "")
-        args = fn.get("arguments", {})
+    final_content = msg.get("content", "") or "Actions completed."
+    _conversation_history.append({"role": "assistant", "content": final_content})
 
-        interaction["tool_call"] = name
-        interaction["tool_args"] = str(args)
-
-        validation_err = validate_node_args(args, _active_scenario)
-        if validation_err:
-            interaction["validation_passed"] = False
-            interaction["validation_error"] = validation_err
-            interaction["execution_success"] = False
-            metrics.record(interaction)
-            results.append({"tool": name, "error": validation_err})
-            continue
-
-        interaction["validation_passed"] = True
-        try:
-            tool_result = dispatch_tool(
-                name, args, _active_scenario, _firewall_driver, lab_driver,
-            )
-            interaction["tool_executed_at"] = time.time()
-            interaction["execution_result"] = str(tool_result)[:500]
-            interaction["execution_success"] = True
-            results.append({"tool": name, "args": args, "result": tool_result})
-        except Exception as e:
-            interaction["tool_executed_at"] = time.time()
-            interaction["execution_result"] = str(e)[:500]
-            interaction["execution_success"] = False
-            results.append({"tool": name, "args": args, "error": str(e)})
-
-    metrics.record(interaction)
-
-    total_latency = time.time() - interaction["prompt_sent_at"]
     return {
-        "response": msg.get("content", ""),
-        "tool_calls": results,
+        "response": final_content,
+        "tool_calls": all_tool_results,
         "metrics": {
-            "llm_latency_s": round(interaction["llm_response_at"] - interaction["prompt_sent_at"], 3),
-            "total_latency_s": round(total_latency, 3),
+            "llm_latency_s": round((first_llm_at or prompt_sent_at) - prompt_sent_at, 3),
+            "total_latency_s": round(time.time() - prompt_sent_at, 3),
         },
     }
 
