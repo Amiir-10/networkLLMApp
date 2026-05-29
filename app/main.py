@@ -11,7 +11,7 @@ from app.lab.driver import ContainerlabLabDriver, LabAlreadyRunning, LabNotFound
 from app.lab.models import Scenario
 from app.firewall.driver import FirewalldDriver
 from app.chat import call_ollama, validate_node_args, dispatch_tool, MAX_TOOL_ITERATIONS
-from app.prompts import SYSTEM_PROMPT
+from app.prompts import build_system_prompt
 from app.metrics import MetricsCollector
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -103,6 +103,13 @@ def lab_state() -> dict:
     return lab_driver.state()
 
 
+@app.get("/rules")
+def get_rules() -> dict:
+    if _firewall_driver is None:
+        return {"forward_rules": [], "zone_rules": [], "parsed": []}
+    return _firewall_driver.list_rules()
+
+
 class ChatRequest(BaseModel):
     message: str
     model: str = "llama3.1:8b"
@@ -126,7 +133,7 @@ def chat(req: ChatRequest) -> dict:
     _active_model = req.model
     _conversation_history.append({"role": "user", "content": req.message})
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + _conversation_history
+    messages = [{"role": "system", "content": build_system_prompt(_active_scenario)}] + _conversation_history
 
     all_tool_results: list[dict] = []
     first_llm_at: float | None = None

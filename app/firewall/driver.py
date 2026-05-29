@@ -1,3 +1,4 @@
+import re
 from typing import Protocol
 
 import httpx
@@ -9,6 +10,56 @@ class FirewallDriver(Protocol):
     def list_rules(self) -> dict: ...
     def flush(self) -> dict: ...
     def health(self) -> dict: ...
+
+
+# Matches rich-rule strings produced by firewall-image/fw-api.py:_build_rich_rule.
+# Anchored optional groups so order is fixed:
+#   rule family="ipv4" [source address="..."] [destination address="..."]
+#     [icmp-type name="..." | port port="..." protocol="..." | protocol value="..."] (drop|accept|reject)
+_RULE_SRC = re.compile(r'source address="([^"]+)"')
+_RULE_DST = re.compile(r'destination address="([^"]+)"')
+_RULE_ICMP = re.compile(r'icmp-type name="([^"]+)"')
+_RULE_PORT = re.compile(r'port port="([^"]+)" protocol="(tcp|udp)"')
+_RULE_PROTO_ONLY = re.compile(r'protocol value="(tcp|udp)"')
+_RULE_ACTION = re.compile(r'\b(drop|accept|reject)\b\s*$')
+
+
+def parse_rich_rule(rule_str: str) -> dict | None:
+    """Parse a firewalld rich-rule string into structured fields.
+
+    Returns None if no recognisable action is present.
+    """
+    rule_str = rule_str.strip()
+    if not rule_str:
+        return None
+    action_m = _RULE_ACTION.search(rule_str)
+    if not action_m:
+        return None
+    src_m = _RULE_SRC.search(rule_str)
+    dst_m = _RULE_DST.search(rule_str)
+
+    proto: str | None = None
+    port: str | None = None
+    if _RULE_ICMP.search(rule_str):
+        proto = "icmp"
+    else:
+        port_m = _RULE_PORT.search(rule_str)
+        if port_m:
+            port = port_m.group(1)
+            proto = port_m.group(2)
+        else:
+            proto_m = _RULE_PROTO_ONLY.search(rule_str)
+            if proto_m:
+                proto = proto_m.group(1)
+
+    return {
+        "src_ip": src_m.group(1) if src_m else None,
+        "dst_ip": dst_m.group(1) if dst_m else None,
+        "proto": proto,
+        "port": port,
+        "action": action_m.group(1),
+        "raw": rule_str,
+    }
 
 
 class FirewalldDriver:
@@ -52,7 +103,11 @@ class FirewalldDriver:
         return {"removed_drop": removed, "added_accept": added}
 
     def list_rules(self) -> dict:
-        return self._get("/rules")
+        raw = self._get("/rules")
+        all_rules = list(raw.get("forward_rules", [])) + list(raw.get("zone_rules", []))
+        parsed = [p for p in (parse_rich_rule(r) for r in all_rules) if p is not None]
+        raw["parsed"] = parsed
+        return raw
 
     def flush(self) -> dict:
         return self._post("/flush")

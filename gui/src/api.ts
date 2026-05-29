@@ -13,6 +13,28 @@ export interface ToolCallResult {
   error?: string;
 }
 
+export interface ParsedRule {
+  src_ip: string | null;
+  dst_ip: string | null;
+  proto: string | null;
+  port: string | null;
+  action: "drop" | "accept" | "reject";
+  raw: string;
+}
+
+export interface RulesResponse {
+  forward_rules: string[];
+  zone_rules: string[];
+  parsed: ParsedRule[];
+}
+
+export interface PingTestResult {
+  ping_from: string;
+  ping_to: string;
+  loss_line: string;
+  raw: { stdout?: string; stderr?: string; exit?: number };
+}
+
 export interface ChatResponse {
   response: string;
   tool_calls: ToolCallResult[];
@@ -53,4 +75,10 @@ export async function sendChat(message: string, model: string): Promise<ChatResp
 export async function clearChat(): Promise<void> {
   const res = await fetch(`${BASE}/chat/reset`, { method: "POST" });
   if (!res.ok) throw new Error(await res.text());
+}
+
+export async function fetchRules(): Promise<RulesResponse> {
+  const res = await fetch(`${BASE}/rules`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
 }

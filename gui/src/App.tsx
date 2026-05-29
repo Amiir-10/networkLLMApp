@@ -1,17 +1,44 @@
-import { useState, useEffect, useCallback } from "react";
-import TopologyPane, { type ConnectionStatus } from "./components/TopologyPane";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import TopologyPane from "./components/TopologyPane";
 import ChatPane from "./components/ChatPane";
-import { fetchHealth, startLab, stopLab, type HealthResponse } from "./api";
+import {
+  fetchHealth,
+  fetchRules,
+  startLab,
+  stopLab,
+  type HealthResponse,
+  type ParsedRule,
+  type ToolCallResult,
+  type PingTestResult,
+} from "./api";
 
-const SCENARIO = "small-soc";
+const SCENARIO = "central-hub";
 const MODELS = ["llama3.1:8b", "qwen2.5-coder:7b"];
+const RULE_MUTATING_TOOLS = new Set(["block_traffic", "allow_traffic", "flush_rules"]);
+
+export interface PingEvent {
+  id: number;
+  src: string;
+  dst: string;
+  blocked: boolean;
+}
+
+function isPingBlocked(lossLine: string | undefined): boolean {
+  if (!lossLine) return true;
+  // Examples:
+  //   "2 packets transmitted, 2 received, 0% packet loss, time 1003ms"  (pass)
+  //   "2 packets transmitted, 0 received, 100% packet loss, time 1004ms" (blocked)
+  return !/\b0% packet loss\b/.test(lossLine);
+}
 
 export default function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [model, setModel] = useState(MODELS[0]);
   const [labLoading, setLabLoading] = useState(false);
   const [labError, setLabError] = useState<string | null>(null);
-  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("inactive");
+  const [firewallRules, setFirewallRules] = useState<ParsedRule[]>([]);
+  const [pingEvent, setPingEvent] = useState<PingEvent | null>(null);
+  const pingIdRef = useRef(0);
 
   const pollHealth = useCallback(async () => {
     try {
@@ -30,14 +57,30 @@ export default function App() {
   const labActive = health?.lab_active ?? false;
   const fwConnected = health?.firewall_connected ?? false;
   const backendUp = health !== null;
+  const labReady = labActive && fwConnected;
 
-  useEffect(() => {
-    if (labActive && fwConnected) {
-      setConnectionStatus((prev) => (prev === "blocked" ? "blocked" : "active"));
-    } else {
-      setConnectionStatus("inactive");
+  const refetchRules = useCallback(async () => {
+    if (!labReady) {
+      setFirewallRules([]);
+      return;
     }
-  }, [labActive, fwConnected]);
+    try {
+      const r = await fetchRules();
+      setFirewallRules(r.parsed);
+    } catch {
+      // best-effort; leave previous rules in place
+    }
+  }, [labReady]);
+
+  // Refetch when lab readiness changes.
+  useEffect(() => {
+    refetchRules();
+  }, [refetchRules]);
+
+  const dropRules = useMemo(
+    () => firewallRules.filter((r) => r.action === "drop"),
+    [firewallRules]
+  );
 
   async function handleStartLab() {
     setLabLoading(true);
@@ -45,7 +88,6 @@ export default function App() {
     try {
       await startLab(SCENARIO);
       await pollHealth();
-      setConnectionStatus("active");
     } catch (err) {
       setLabError(String(err));
     } finally {
@@ -59,7 +101,8 @@ export default function App() {
     try {
       await stopLab(SCENARIO);
       await pollHealth();
-      setConnectionStatus("inactive");
+      setFirewallRules([]);
+      setPingEvent(null);
     } catch (err) {
       setLabError(String(err));
     } finally {
@@ -67,13 +110,33 @@ export default function App() {
     }
   }
 
-  function handleToolCall(toolName: string) {
-    if (toolName === "block_traffic") {
-      setConnectionStatus("blocked");
-    } else if (toolName === "flush_rules" || toolName === "allow_traffic") {
-      setConnectionStatus("active");
-    }
-  }
+  const handleChatComplete = useCallback(
+    (toolCalls: ToolCallResult[]) => {
+      if (toolCalls.some((tc) => RULE_MUTATING_TOOLS.has(tc.tool))) {
+        refetchRules();
+      }
+      // Pick the last ping_test (LLM may emit multiple per response — animate the most recent).
+      const ping = [...toolCalls].reverse().find((tc) => tc.tool === "ping_test");
+      if (ping && ping.args && ping.result && !ping.error) {
+        const args = ping.args as { src?: string; dst?: string };
+        const result = ping.result as PingTestResult;
+        if (args.src && args.dst) {
+          pingIdRef.current += 1;
+          setPingEvent({
+            id: pingIdRef.current,
+            src: args.src,
+            dst: args.dst,
+            blocked: isPingBlocked(result.loss_line),
+          });
+        }
+      }
+    },
+    [refetchRules]
+  );
+
+  const handlePingEventComplete = useCallback(() => {
+    setPingEvent(null);
+  }, []);
 
   return (
     <div className="h-screen flex flex-col bg-white">
@@ -84,7 +147,12 @@ export default function App() {
             <h2 className="text-sm font-semibold text-gray-700">Network Topology</h2>
           </div>
           <div className="h-[calc(100%-49px)]">
-            <TopologyPane connectionStatus={connectionStatus} />
+            <TopologyPane
+              labReady={labReady}
+              dropRules={dropRules}
+              pingEvent={pingEvent}
+              onPingEventComplete={handlePingEventComplete}
+            />
           </div>
         </div>
 
@@ -103,7 +171,7 @@ export default function App() {
             </select>
           </div>
           <div className="h-[calc(100%-49px)]">
-            <ChatPane model={model} labActive={labActive && fwConnected} onToolCall={handleToolCall} />
+            <ChatPane model={model} labActive={labReady} onChatComplete={handleChatComplete} />
           </div>
         </div>
       </div>
@@ -141,6 +209,11 @@ export default function App() {
             Firewall
           </span>
           {labActive && <span className="text-gray-400">Scenario: {SCENARIO}</span>}
+          {labReady && dropRules.length > 0 && (
+            <span className="text-gray-400">
+              · {dropRules.length} DROP rule{dropRules.length === 1 ? "" : "s"}
+            </span>
+          )}
         </div>
 
         {labError && (

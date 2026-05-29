@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { sendChat, clearChat, type ChatResponse } from "../api";
+import { sendChat, clearChat, type ChatResponse, type ToolCallResult } from "../api";
 
 interface Message {
   role: "user" | "assistant";
@@ -12,7 +12,7 @@ interface Message {
 interface Props {
   model: string;
   labActive: boolean;
-  onToolCall: (toolName: string) => void;
+  onChatComplete: (toolCalls: ToolCallResult[]) => void;
 }
 
 function ToolCallDetail({ tc }: { tc: ChatResponse["tool_calls"][number] }) {
@@ -36,7 +36,7 @@ function ToolCallDetail({ tc }: { tc: ChatResponse["tool_calls"][number] }) {
       {open && (
         <div className="mt-1 pl-4 font-mono text-gray-600 break-all border-t border-gray-100 pt-1">
           {tc.error && <p className="text-red-500">{tc.error}</p>}
-          {tc.result && (
+          {!!tc.result && (
             <pre className="whitespace-pre-wrap text-[11px]">
               {typeof tc.result === "string" ? tc.result : JSON.stringify(tc.result, null, 2)}
             </pre>
@@ -47,7 +47,7 @@ function ToolCallDetail({ tc }: { tc: ChatResponse["tool_calls"][number] }) {
   );
 }
 
-export default function ChatPane({ model, labActive, onToolCall }: Props) {
+export default function ChatPane({ model, labActive, onChatComplete }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -65,9 +65,7 @@ export default function ChatPane({ model, labActive, onToolCall }: Props) {
     setLoading(true);
     try {
       const resp = await sendChat(text, model);
-      for (const tc of resp.tool_calls) {
-        onToolCall(tc.tool);
-      }
+      onChatComplete(resp.tool_calls);
       setMessages((prev) => [
         ...prev,
         {
