@@ -3,7 +3,6 @@ import json
 import httpx
 
 from app.lab.models import Scenario
-from app.scanner import run_image_scan
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 
@@ -139,8 +138,8 @@ def dispatch_tool(
     name: str,
     args: dict,
     scenario: Scenario,
-    firewall_driver,
-    lab_driver,
+    security,
+    topology,
 ) -> dict:
     ip_map = _node_ip_map(scenario)
 
@@ -148,25 +147,25 @@ def dispatch_tool(
         src_ip = ip_map.get(args["src"])
         dst_ip = ip_map.get(args["dst"])
         proto = args.get("proto", "icmp")
-        return firewall_driver.block(src_ip, dst_ip, proto)
+        return security.block(src_ip, dst_ip, proto)
 
     elif name == "allow_traffic":
         src_ip = ip_map.get(args["src"])
         dst_ip = ip_map.get(args["dst"])
         proto = args.get("proto", "icmp")
-        return firewall_driver.allow(src_ip, dst_ip, proto)
+        return security.allow(src_ip, dst_ip, proto)
 
     elif name == "flush_rules":
-        return firewall_driver.flush()
+        return security.flush()
 
     elif name == "list_rules":
-        return firewall_driver.list_rules()
+        return security.list_rules()
 
     elif name == "ping_test":
         src = args["src"]
         dst = args["dst"]
         dst_ip = ip_map.get(dst, dst)
-        result = lab_driver.exec(scenario.name, src, ["ping", "-c", "2", "-W", "2", dst_ip])
+        result = topology.exec(scenario.name, src, ["ping", "-c", "2", "-W", "2", dst_ip])
         loss = "unknown"
         for line in result.get("stdout", "").splitlines():
             if "packet loss" in line:
@@ -178,7 +177,7 @@ def dispatch_tool(
         for n in scenario.nodes:
             ips = [f"{iface.ip} -> {iface.to}" for iface in n.interfaces]
             nodes_info.append({"id": n.id, "role": n.role, "interfaces": ips})
-        rules = firewall_driver.list_rules()
+        rules = security.list_rules()
         return {"topology": nodes_info, "firewall_rules": rules}
 
     elif name == "vulnerability_scan":
@@ -186,6 +185,6 @@ def dispatch_tool(
         image_map = _node_image_map(scenario)
         if target not in image_map:
             return {"error": f"Unknown node '{target}'. Valid nodes: {sorted(image_map)}"}
-        return {"target": target, "image": image_map[target], **run_image_scan(image_map[target])}
+        return {"target": target, "image": image_map[target], **security.scan(image_map[target])}
 
     return {"error": f"Unknown tool: {name}"}

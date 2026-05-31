@@ -1,25 +1,23 @@
+"""Topology engine: containerlab lifecycle (deploy/destroy/state/exec).
+
+This is the relocated ContainerlabLabDriver. Class renamed TopologyEngine to
+match the engine layer; method signatures (start/stop/state/exec/get_mgmt_ip)
+are unchanged so callers re-point with no behaviour change. Per-node L3 config
+is delegated to app.engines.netconfig (the network-config engine).
+
+Future CRUD verbs (add_node / remove_node / isolate_node) land here.
+"""
 import json
 import subprocess
-import time
 from pathlib import Path
 from typing import Protocol
 
 import yaml
 
 from app.lab.models import Scenario
+from app.engines import netconfig
 
 CONTAINERLAB_BIN = "/home/amir/.local/bin/containerlab"
-
-# A tiny TCP service every PC runs so the hosts are not empty idle containers:
-# they listen on :8080 and answer each connection. Run detached (PID 1 stays
-# `sleep infinity`, so the demo's connectivity never depends on this), it gives
-# a real, reachable service for future network/port scans to discover.
-PC_LISTENER_SCRIPT = (
-    "while true; do "
-    "printf 'HTTP/1.1 200 OK\\r\\nConnection: close\\r\\n\\r\\nalive: %s\\n' \"$(hostname)\" "
-    "| nc -l -p 8080 2>/dev/null; "
-    "done"
-)
 
 
 class LabAlreadyRunning(Exception):
@@ -37,7 +35,7 @@ class LabDriver(Protocol):
     def exec(self, scenario_name: str, node_id: str, cmd: list[str]) -> dict: ...
 
 
-class ContainerlabLabDriver:
+class TopologyEngine:
     def __init__(self, work_dir: Path):
         self.work_dir = work_dir
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -91,62 +89,6 @@ class ContainerlabLabDriver:
             timeout=timeout,
         )
 
-    def _docker_exec(self, container: str, cmd: list[str], timeout: int = 15) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            ["docker", "exec", container, *cmd],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-
-    def _docker_exec_detached(self, container: str, cmd: list[str], timeout: int = 10) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            ["docker", "exec", "-d", container, *cmd],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-
-    def _wait_for_firewalld(self, container: str, timeout: int = 30) -> bool:
-        for _ in range(timeout * 2):
-            r = self._docker_exec(container, ["firewall-cmd", "--state"], timeout=5)
-            if r.returncode == 0 and "running" in r.stdout:
-                return True
-            time.sleep(0.5)
-        return False
-
-    def _configure_node(self, scenario_name: str, scenario: Scenario) -> list[str]:
-        warnings: list[str] = []
-        for node in scenario.nodes:
-            container = f"clab-{scenario_name}-{node.id}"
-            if node.role == "firewall":
-                if not self._wait_for_firewalld(container):
-                    warnings.append(f"{container}: firewalld did not become ready in time")
-            for idx, iface in enumerate(node.interfaces, start=1):
-                eth = f"eth{idx}"
-                r1 = self._docker_exec(container, ["ip", "addr", "add", iface.ip, "dev", eth])
-                if r1.returncode != 0 and "File exists" not in r1.stderr:
-                    warnings.append(f"{container}: ip addr add {iface.ip} dev {eth} -> {r1.stderr.strip()}")
-                r2 = self._docker_exec(container, ["ip", "link", "set", eth, "up"])
-                if r2.returncode != 0:
-                    warnings.append(f"{container}: ip link set {eth} up -> {r2.stderr.strip()}")
-                if iface.gateway:
-                    r3 = self._docker_exec(
-                        container, ["ip", "route", "replace", "default", "via", iface.gateway]
-                    )
-                    if r3.returncode != 0:
-                        warnings.append(
-                            f"{container}: ip route replace default via {iface.gateway} -> {r3.stderr.strip()}"
-                        )
-            if node.role == "pc":
-                # Start the always-on listener (detached) so the PC is a live,
-                # reachable host rather than an idle container. Best-effort:
-                # a failure here must not block lab readiness.
-                rl = self._docker_exec_detached(container, ["sh", "-c", PC_LISTENER_SCRIPT])
-                if rl.returncode != 0:
-                    warnings.append(f"{container}: listener launch -> {rl.stderr.strip()}")
-        return warnings
-
     def get_mgmt_ip(self, scenario_name: str, node_id: str) -> str | None:
         container = f"clab-{scenario_name}-{node_id}"
         result = subprocess.run(
@@ -175,7 +117,7 @@ class ContainerlabLabDriver:
                 f"containerlab deploy failed (exit {result.returncode}):\n"
                 f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
             )
-        warnings = self._configure_node(scenario.name, scenario)
+        warnings = netconfig.configure_nodes(scenario.name, scenario)
         nodes = [
             {"id": n.id, "role": n.role, "container": f"clab-{scenario.name}-{n.id}"}
             for n in scenario.nodes
@@ -213,7 +155,7 @@ class ContainerlabLabDriver:
 
     def exec(self, scenario_name: str, node_id: str, cmd: list[str]) -> dict:
         container = f"clab-{scenario_name}-{node_id}"
-        result = self._docker_exec(container, cmd, timeout=30)
+        result = netconfig.docker_exec(container, cmd, timeout=30)
         return {
             "container": container,
             "cmd": cmd,

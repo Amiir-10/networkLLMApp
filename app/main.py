@@ -7,9 +7,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from app.lab.driver import ContainerlabLabDriver, LabAlreadyRunning, LabNotFound
+from app.engines.topology import TopologyEngine, LabAlreadyRunning, LabNotFound
+from app.engines.security import SecurityEngine
 from app.lab.models import Scenario
-from app.firewall.driver import FirewalldDriver
 from app.chat import call_ollama, validate_node_args, dispatch_tool, MAX_TOOL_ITERATIONS
 from app.prompts import build_system_prompt
 from app.metrics import MetricsCollector
@@ -25,11 +25,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-lab_driver = ContainerlabLabDriver(work_dir=LAB_WORK_DIR)
+topology = TopologyEngine(work_dir=LAB_WORK_DIR)
+security = SecurityEngine()
 metrics = MetricsCollector()
 
 _active_scenario: Scenario | None = None
-_firewall_driver: FirewalldDriver | None = None
 _active_model: str = "llama3.1:8b"
 _conversation_history: list[dict] = []
 
@@ -39,7 +39,7 @@ def health() -> dict:
     return {
         "status": "ok",
         "lab_active": _active_scenario is not None,
-        "firewall_connected": _firewall_driver is not None,
+        "firewall_connected": security.connected,
     }
 
 
@@ -53,11 +53,11 @@ def _load_scenario(scenario_name: str) -> Scenario:
 
 @app.post("/lab/start/{scenario_name}")
 def lab_start(scenario_name: str) -> dict:
-    global _active_scenario, _firewall_driver, _conversation_history
+    global _active_scenario, _conversation_history
     _conversation_history = []
     scenario = _load_scenario(scenario_name)
     try:
-        result = lab_driver.start(scenario)
+        result = topology.start(scenario)
     except LabAlreadyRunning as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except RuntimeError as exc:
@@ -66,13 +66,13 @@ def lab_start(scenario_name: str) -> dict:
     _active_scenario = scenario
     fw_node = next((n for n in scenario.nodes if n.role == "firewall"), None)
     if fw_node:
-        mgmt_ip = lab_driver.get_mgmt_ip(scenario_name, fw_node.id)
+        mgmt_ip = topology.get_mgmt_ip(scenario_name, fw_node.id)
         if mgmt_ip:
             import time as _time
-            _firewall_driver = FirewalldDriver(mgmt_url=f"http://{mgmt_ip}:8080")
+            security.connect(mgmt_url=f"http://{mgmt_ip}:8080")
             for _ in range(30):
                 try:
-                    fw_health = _firewall_driver.health()
+                    fw_health = security.health()
                     result["firewall"] = fw_health
                     break
                 except Exception:
@@ -85,22 +85,22 @@ def lab_start(scenario_name: str) -> dict:
 
 @app.post("/lab/stop/{scenario_name}")
 def lab_stop(scenario_name: str) -> dict:
-    global _active_scenario, _firewall_driver, _conversation_history
+    global _active_scenario, _conversation_history
     _conversation_history = []
     try:
-        lab_driver.stop(scenario_name)
+        topology.stop(scenario_name)
     except LabNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     _active_scenario = None
-    _firewall_driver = None
+    security.disconnect()
     return {"status": "stopped", "scenario": scenario_name}
 
 
 @app.get("/lab/state")
 def lab_state() -> dict:
-    return lab_driver.state()
+    return topology.state()
 
 
 def _describe_active_drops() -> list[str]:
@@ -108,7 +108,7 @@ def _describe_active_drops() -> list[str]:
 
     Returns [] when a lab is up but no drops exist, so the prompt can say so.
     """
-    if _firewall_driver is None or _active_scenario is None:
+    if not security.connected or _active_scenario is None:
         return []
     ip_to_node = {
         iface.ip.split("/")[0]: n.id
@@ -116,7 +116,7 @@ def _describe_active_drops() -> list[str]:
         for iface in n.interfaces
     }
     try:
-        parsed = _firewall_driver.list_rules().get("parsed", [])
+        parsed = security.list_rules().get("parsed", [])
     except Exception:
         return []
     out: list[str] = []
@@ -132,9 +132,9 @@ def _describe_active_drops() -> list[str]:
 
 @app.get("/rules")
 def get_rules() -> dict:
-    if _firewall_driver is None:
+    if not security.connected:
         return {"forward_rules": [], "zone_rules": [], "parsed": []}
-    return _firewall_driver.list_rules()
+    return security.list_rules()
 
 
 class ChatRequest(BaseModel):
@@ -154,7 +154,7 @@ def chat(req: ChatRequest) -> dict:
     global _active_model
     if not _active_scenario:
         raise HTTPException(status_code=400, detail="No lab is running. Start a lab first.")
-    if not _firewall_driver:
+    if not security.connected:
         raise HTTPException(status_code=400, detail="Firewall driver not connected.")
 
     _active_model = req.model
@@ -261,7 +261,7 @@ def chat(req: ChatRequest) -> dict:
                 per_tool["validation_passed"] = True
                 try:
                     tool_result = dispatch_tool(
-                        name, args, _active_scenario, _firewall_driver, lab_driver,
+                        name, args, _active_scenario, security, topology,
                     )
                     per_tool["tool_executed_at"] = time.time()
                     per_tool["execution_result"] = str(tool_result)[:500]
