@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -17,6 +17,7 @@ import {
   INITIAL_NODES,
   FIREWALL_NODE_ID,
   ipToNodeLabel,
+  wireIdForHop,
   type DeviceNodeData,
 } from "../topology";
 import type { ParsedRule } from "../api";
@@ -138,24 +139,71 @@ function DeviceNode({ data }: NodeProps) {
   );
 }
 
-// --- Wire Edge (static, neutral) ---
+// --- Wire Edge ---
+//
+// The wire is a *physical-link-up* indicator. It NEVER reflects firewall policy.
+//   - lab down            -> muted dashed, static.
+//   - lab up              -> green moving dash ("network is alive").
+//   - lab up + highlighted -> brighter/thicker green, faster dash (carries an active ping).
+// A blocked ping does NOT turn the wire red; the only "blocked here" cue is a
+// small stop glyph near the firewall end (data.stopMarker).
+
+interface WireEdgeData {
+  highlight?: boolean;
+  stopMarker?: boolean;
+  [key: string]: unknown;
+}
 
 function WireEdge({
   id,
+  source,
   sourceX,
   sourceY,
   targetX,
   targetY,
   label,
+  data,
 }: EdgeProps) {
   const labReady = useContext(LabReadyContext);
+  const d = (data ?? {}) as WireEdgeData;
   const edgePath = `M ${sourceX} ${sourceY} L ${targetX} ${targetY}`;
   const midX = (sourceX + targetX) / 2;
   const midY = (sourceY + targetY) / 2;
 
-  const strokeColor = labReady ? "#94a3b8" : "#cbd5e1";
-  const dashArray = labReady ? undefined : "4 4";
-  const opacity = labReady ? 1 : 0.55;
+  let strokeColor: string;
+  let strokeWidth = 2;
+  let dashArray: string | undefined;
+  let opacity = 1;
+  let animationClass = "";
+
+  if (!labReady) {
+    strokeColor = "#cbd5e1";
+    dashArray = "4 4";
+    opacity = 0.55;
+  } else if (d.highlight) {
+    strokeColor = "#16a34a";
+    strokeWidth = 3;
+    dashArray = "8 4";
+    animationClass = "edge-flow-fast";
+  } else {
+    strokeColor = "#22c55e";
+    dashArray = "8 4";
+    animationClass = "edge-flow";
+  }
+
+  // The firewall is always one endpoint of every physical link; place the stop
+  // glyph a little inside the wire from the firewall end so it never lands on
+  // the shield icon or its chip cluster.
+  const fwIsSource = source === FIREWALL_NODE_ID;
+  const fwX = fwIsSource ? sourceX : targetX;
+  const fwY = fwIsSource ? sourceY : targetY;
+  const otherX = fwIsSource ? targetX : sourceX;
+  const otherY = fwIsSource ? targetY : sourceY;
+  const dx = otherX - fwX;
+  const dy = otherY - fwY;
+  const len = Math.hypot(dx, dy) || 1;
+  const stopX = fwX + (dx / len) * 18;
+  const stopY = fwY + (dy / len) * 18;
 
   return (
     <>
@@ -163,10 +211,11 @@ function WireEdge({
         id={id}
         d={edgePath}
         stroke={strokeColor}
-        strokeWidth={2}
+        strokeWidth={strokeWidth}
         strokeDasharray={dashArray}
         fill="none"
         opacity={opacity}
+        className={animationClass}
       />
       {label && (
         <text
@@ -179,59 +228,17 @@ function WireEdge({
           {String(label)}
         </text>
       )}
-    </>
-  );
-}
-
-// --- Packet Pulse Edge (transient animation) ---
-
-interface PacketPulseData {
-  color: "green" | "red";
-  durMs: number;
-  beginMs: number;
-  stopMarker: boolean; // draw red X at target end (blocked stop)
-  [key: string]: unknown;
-}
-
-function PacketPulseEdge(props: EdgeProps) {
-  const { id, sourceX, sourceY, targetX, targetY, data } = props;
-  const d = data as PacketPulseData;
-  const path = `M ${sourceX} ${sourceY} L ${targetX} ${targetY}`;
-  const stroke = d.color === "red" ? "#ef4444" : "#22c55e";
-
-  return (
-    <>
-      {/* Faint guide line under the animation so the route is visible while the packet moves. */}
-      <path
-        id={`${id}-guide`}
-        d={path}
-        stroke={stroke}
-        strokeWidth={3}
-        strokeOpacity={0.25}
-        fill="none"
-      />
-      {/* Animated packet circle */}
-      <circle r="6" fill={stroke} stroke="white" strokeWidth={1.5}>
-        <animateMotion
-          dur={`${d.durMs}ms`}
-          begin={`${d.beginMs}ms`}
-          repeatCount="1"
-          fill="freeze"
-          path={path}
-        />
-      </circle>
       {d.stopMarker && (
-        <g transform={`translate(${targetX}, ${targetY})`} opacity={0}>
+        <g transform={`translate(${stopX}, ${stopY})`}>
           <animate
             attributeName="opacity"
-            from="0"
-            to="1"
-            dur="150ms"
-            begin={`${d.beginMs + d.durMs}ms`}
+            values="0;1;1;0"
+            keyTimes="0;0.15;0.7;1"
+            dur="900ms"
             fill="freeze"
           />
-          <circle r="11" fill="#fee2e2" stroke="#ef4444" strokeWidth="2" />
-          <path d="M -5 -5 L 5 5 M 5 -5 L -5 5" stroke="#ef4444" strokeWidth="2.5" strokeLinecap="round" />
+          <circle r="6" fill="#fee2e2" stroke="#ef4444" strokeWidth="1.5" />
+          <line x1="-3.5" y1="-3.5" x2="3.5" y2="3.5" stroke="#ef4444" strokeWidth="1.8" strokeLinecap="round" />
         </g>
       )}
     </>
@@ -241,7 +248,7 @@ function PacketPulseEdge(props: EdgeProps) {
 // --- Node/Edge type registries ---
 
 const nodeTypes = { device: DeviceNode };
-const edgeTypes = { wire: WireEdge, packet_pulse: PacketPulseEdge };
+const edgeTypes = { wire: WireEdge };
 
 // --- Static wire edges (one per physical link in central-hub) ---
 
@@ -284,75 +291,28 @@ const STATIC_EDGES: Edge[] = [
   },
 ];
 
-// --- Ping animation edge builder ---
+// --- Ping highlight: map a ping event onto the existing wires it traverses ---
 
 const HOP_MS = 850;
 
-function buildPingPulseEdges(event: PingEvent): Edge[] {
-  // For central-hub, every PC connects through fw. Hop 1: src -> fw. Hop 2 (if pass): fw -> dst.
-  // If src or dst is fw itself, collapse appropriately.
-  const edges: Edge[] = [];
-
-  if (event.src === FIREWALL_NODE_ID && event.dst !== FIREWALL_NODE_ID) {
-    edges.push({
-      id: `ping-pulse-${event.id}-0`,
-      source: FIREWALL_NODE_ID,
-      target: event.dst,
-      type: "packet_pulse",
-      data: { color: event.blocked ? "red" : "green", durMs: HOP_MS, beginMs: 0, stopMarker: event.blocked } as PacketPulseData,
-      selectable: false,
-      focusable: false,
-    });
-    return edges;
+// All PC/router traffic flows through fw. Resolve the wire(s) a ping crosses:
+//   src -> fw  (hop 1, always)        and   fw -> dst  (hop 2, pass only)
+// If an endpoint is fw itself, it collapses to a single hop.
+function resolveHopWires(src: string, dst: string): { first: string | null; second: string | null } {
+  if (src === FIREWALL_NODE_ID) {
+    return { first: wireIdForHop(FIREWALL_NODE_ID, dst), second: null };
   }
-
-  if (event.dst === FIREWALL_NODE_ID && event.src !== FIREWALL_NODE_ID) {
-    edges.push({
-      id: `ping-pulse-${event.id}-0`,
-      source: event.src,
-      target: FIREWALL_NODE_ID,
-      type: "packet_pulse",
-      data: { color: event.blocked ? "red" : "green", durMs: HOP_MS, beginMs: 0, stopMarker: event.blocked } as PacketPulseData,
-      selectable: false,
-      focusable: false,
-    });
-    return edges;
+  if (dst === FIREWALL_NODE_ID) {
+    return { first: wireIdForHop(src, FIREWALL_NODE_ID), second: null };
   }
+  return {
+    first: wireIdForHop(src, FIREWALL_NODE_ID),
+    second: wireIdForHop(FIREWALL_NODE_ID, dst),
+  };
+}
 
-  // Standard two-hop case through fw.
-  edges.push({
-    id: `ping-pulse-${event.id}-0`,
-    source: event.src,
-    target: FIREWALL_NODE_ID,
-    type: "packet_pulse",
-    data: {
-      color: event.blocked ? "red" : "green",
-      durMs: HOP_MS,
-      beginMs: 0,
-      stopMarker: event.blocked,
-    } as PacketPulseData,
-    selectable: false,
-    focusable: false,
-  });
-
-  if (!event.blocked) {
-    edges.push({
-      id: `ping-pulse-${event.id}-1`,
-      source: FIREWALL_NODE_ID,
-      target: event.dst,
-      type: "packet_pulse",
-      data: {
-        color: "green",
-        durMs: HOP_MS,
-        beginMs: HOP_MS,
-        stopMarker: false,
-      } as PacketPulseData,
-      selectable: false,
-      focusable: false,
-    });
-  }
-
-  return edges;
+interface WireHighlight {
+  stopMarker: boolean;
 }
 
 // --- Component ---
@@ -371,25 +331,58 @@ export default function TopologyPane({
   onPingEventComplete,
 }: Props) {
   const [nodes, , onNodesChange] = useNodesState<Node<DeviceNodeData>>(INITIAL_NODES);
+  const [highlights, setHighlights] = useState<Record<string, WireHighlight>>({});
 
-  const edges: Edge[] = useMemo(() => {
-    if (!pingEvent) return STATIC_EDGES;
-    return [...STATIC_EDGES, ...buildPingPulseEdges(pingEvent)];
-  }, [pingEvent]);
-
-  // Auto-dismiss ping animation after total duration.
+  // Stage the highlight along the path: source-side wire lights first, then the
+  // far-side wire ~HOP_MS later (pass only), telling the "packet flows through"
+  // story without drawing any ghost edges. One timer per stage; cleared on change.
   useEffect(() => {
-    if (!pingEvent) return;
-    const hops = pingEvent.blocked ? 1 : 2;
-    const total = HOP_MS * hops + 400; // leave time for the red-X to be visible
-    const timer = setTimeout(onPingEventComplete, total);
-    return () => clearTimeout(timer);
+    if (!pingEvent) {
+      setHighlights({});
+      return;
+    }
+    const { src, dst, blocked } = pingEvent;
+    const { first, second } = resolveHopWires(src, dst);
+
+    const initial: Record<string, WireHighlight> = {};
+    if (first) initial[first] = { stopMarker: blocked };
+    setHighlights(initial);
+
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    if (!blocked && second) {
+      timers.push(
+        setTimeout(() => {
+          setHighlights((h) => ({ ...h, [second]: { stopMarker: false } }));
+        }, HOP_MS)
+      );
+    }
+
+    const hops = blocked ? 1 : 2;
+    const total = HOP_MS * hops + 400; // leave the stop glyph / final hop visible
+    timers.push(setTimeout(onPingEventComplete, total));
+
+    return () => timers.forEach(clearTimeout);
   }, [pingEvent, onPingEventComplete]);
+
+  const edges: Edge[] = useMemo(
+    () =>
+      STATIC_EDGES.map((e) => {
+        const h = highlights[e.id];
+        if (!h) return e;
+        return { ...e, data: { highlight: true, stopMarker: h.stopMarker } };
+      }),
+    [highlights]
+  );
 
   return (
     <LabReadyContext.Provider value={labReady}>
       <DropRulesContext.Provider value={dropRules}>
         <div className="h-full w-full">
+          <style>{`
+            @keyframes dash-flow { to { stroke-dashoffset: -24; } }
+            .edge-flow      { animation: dash-flow 1.5s linear infinite; }
+            .edge-flow-fast { animation: dash-flow 0.6s linear infinite; }
+          `}</style>
           <ReactFlow
             nodes={nodes}
             edges={edges}

@@ -103,6 +103,33 @@ def lab_state() -> dict:
     return lab_driver.state()
 
 
+def _describe_active_drops() -> list[str]:
+    """Live DROP rules as node-labelled strings, e.g. ['pc1 -> pc2 (icmp)'].
+
+    Returns [] when a lab is up but no drops exist, so the prompt can say so.
+    """
+    if _firewall_driver is None or _active_scenario is None:
+        return []
+    ip_to_node = {
+        iface.ip.split("/")[0]: n.id
+        for n in _active_scenario.nodes
+        for iface in n.interfaces
+    }
+    try:
+        parsed = _firewall_driver.list_rules().get("parsed", [])
+    except Exception:
+        return []
+    out: list[str] = []
+    for r in parsed:
+        if r.get("action") != "drop":
+            continue
+        src = ip_to_node.get(r.get("src_ip"), r.get("src_ip") or "any")
+        dst = ip_to_node.get(r.get("dst_ip"), r.get("dst_ip") or "any")
+        proto = r.get("proto") or "all"
+        out.append(f"{src} -> {dst} ({proto})")
+    return out
+
+
 @app.get("/rules")
 def get_rules() -> dict:
     if _firewall_driver is None:
@@ -133,7 +160,13 @@ def chat(req: ChatRequest) -> dict:
     _active_model = req.model
     _conversation_history.append({"role": "user", "content": req.message})
 
-    messages = [{"role": "system", "content": build_system_prompt(_active_scenario)}] + _conversation_history
+    # Inject the live DROP rules into the system prompt as ground-truth data so
+    # the model re-enables the exact pair/proto the user blocked (it otherwise
+    # hallucinates the wrong src node or downgrades proto to "all" on re-enable).
+    active_drops = _describe_active_drops()
+    messages = [
+        {"role": "system", "content": build_system_prompt(_active_scenario, active_drops)}
+    ] + _conversation_history
 
     all_tool_results: list[dict] = []
     first_llm_at: float | None = None
@@ -157,6 +190,13 @@ def chat(req: ChatRequest) -> dict:
         try:
             ollama_resp = call_ollama(req.model, messages)
         except Exception as e:
+            # Roll back the user turn appended above. A failed call (e.g. a
+            # cold-start timeout) must not leave a dangling user message in the
+            # shared history — a thread with consecutive user turns and no
+            # assistant/tool replies was the root cause of allow_traffic
+            # silently no-op'ing on a later "re-enable" turn.
+            if _conversation_history and _conversation_history[-1].get("role") == "user":
+                _conversation_history.pop()
             raise HTTPException(status_code=502, detail=f"Ollama error: {e}")
 
         now = time.time()

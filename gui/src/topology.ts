@@ -62,3 +62,29 @@ export function ipToNodeLabel(ip: string | null | undefined): string {
   if (!ip) return "any";
   return IP_TO_NODE_ID[ip] ?? ip;
 }
+
+// Ordered-node-pair -> physical wire id. Wires are undirected, so both
+// orderings of each link map to the same id. Lets a ping hop (a -> b) be
+// translated to the existing edge to light up, instead of drawing a ghost edge.
+// Wire ids must match the STATIC_EDGES declared in TopologyPane.
+const PHYSICAL_LINKS: Array<[string, string, string]> = [
+  ["pc1", "fw", "pc1-fw"],
+  ["fw", "pc2", "fw-pc2"],
+  ["fw", "pc3", "fw-pc3"],
+  ["router", "fw", "router-fw"],
+];
+
+const hopKey = (a: string, b: string) => `${a}|${b}`;
+
+export const WIRE_FOR_HOP: Record<string, string> = Object.fromEntries(
+  PHYSICAL_LINKS.flatMap(([a, b, id]) => [
+    [hopKey(a, b), id],
+    [hopKey(b, a), id],
+  ])
+);
+
+// Resolve the wire id connecting two adjacent nodes, or null if they are not
+// directly linked (e.g. pc1 <-> pc2, which is two hops through fw).
+export function wireIdForHop(a: string, b: string): string | null {
+  return WIRE_FOR_HOP[hopKey(a, b)] ?? null;
+}

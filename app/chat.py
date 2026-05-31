@@ -3,6 +3,7 @@ import json
 import httpx
 
 from app.lab.models import Scenario
+from app.scanner import run_image_scan
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 
@@ -80,7 +81,25 @@ TOOLS = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "vulnerability_scan",
+            "description": "Run a security vulnerability scan on a node's container image. Reports CVEs, CIS Docker benchmark issues, hardcoded secrets, and supply-chain risks. Use when the user asks to scan, audit, or check the security/vulnerabilities of a node.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "Node ID to scan (e.g. pc1, fw, router)"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
 ]
+
+
+def _node_image_map(scenario: Scenario) -> dict[str, str]:
+    return {node.id: node.image for node in scenario.nodes}
 
 def _node_ip_map(scenario: Scenario) -> dict[str, str]:
     result = {}
@@ -93,7 +112,10 @@ def _node_ip_map(scenario: Scenario) -> dict[str, str]:
 
 
 def call_ollama(model: str, messages: list[dict]) -> dict:
-    with httpx.Client(timeout=60.0) as client:
+    # 120s, not 60s: a cold model load (first call after the backend or Ollama
+    # starts) can push the first response past 60s and trip the timeout even
+    # though the request is fine. Subsequent calls are fast.
+    with httpx.Client(timeout=120.0) as client:
         resp = client.post(OLLAMA_URL, json={
             "model": model,
             "messages": messages,
@@ -158,5 +180,12 @@ def dispatch_tool(
             nodes_info.append({"id": n.id, "role": n.role, "interfaces": ips})
         rules = firewall_driver.list_rules()
         return {"topology": nodes_info, "firewall_rules": rules}
+
+    elif name == "vulnerability_scan":
+        target = args.get("target", "")
+        image_map = _node_image_map(scenario)
+        if target not in image_map:
+            return {"error": f"Unknown node '{target}'. Valid nodes: {sorted(image_map)}"}
+        return {"target": target, "image": image_map[target], **run_image_scan(image_map[target])}
 
     return {"error": f"Unknown tool: {name}"}

@@ -34,11 +34,25 @@ When the user asks about the network state, use describe_state.
 Always use node IDs (not IP addresses) when calling tools.
 
 The firewall's forward policy default is allow-all: when no rules are present (e.g. right after flush_rules), traffic between all nodes flows freely. A block_traffic rule overrides this for the specified src/dst/protocol; allow_traffic removes a matching block and explicitly allows. Never claim traffic is "blocked by default" — only explicit drop rules block traffic.
+
+When the user asks to re-enable, undo, restore, unblock, or allow ONE specific connection that was previously blocked, call allow_traffic with the SAME src, dst, and proto as the most recent matching block_traffic (proto defaults to icmp when the block did not specify one). Do NOT use proto "all" to undo a specific block — allow_traffic only removes a drop rule whose protocol matches, so "all" leaves a more specific drop (e.g. icmp) in place and the connection stays blocked.
+
+When the user asks to re-enable, restore, unblock, or open ALL, BOTH, or EVERY previously-blocked connection at once (i.e. not a single named pair), call flush_rules exactly once. flush_rules removes every block in one reliable step; do NOT try to emit several separate allow_traffic calls for a bulk request, as that is error-prone. Never claim a rule was added, removed, or changed unless you actually called the matching tool in this turn.
+
+You can also run a security vulnerability scan on any node's container image using vulnerability_scan with the node ID as `target`. It reports CVEs, CIS Docker benchmark issues, hardcoded secrets, and supply-chain risks for that node's image. Proactively SUGGEST running a scan when the user asks about security posture, hardening, vulnerabilities, or whether a node is safe — offer it, and run it when the user agrees or asks. After a scan, summarise the most important findings in plain language: the counts by severity and the top few issues with their remediation. Note the scan inspects the container image, not live network services.
 """
 
 
-def build_system_prompt(scenario: Scenario | None) -> str:
+def build_system_prompt(
+    scenario: Scenario | None,
+    active_drops: list[str] | None = None,
+) -> str:
     """Build the system prompt with the current scenario's node IDs injected.
+
+    `active_drops` is a list of human-readable DROP descriptions
+    (e.g. "pc1 -> pc2 (icmp)") reflecting the live firewall state. Injecting the
+    real rules as DATA — not just a behavioural nudge — lets the model re-enable
+    the exact pair/proto the user blocked instead of guessing from prior prose.
 
     Falls back to a generic prompt if no scenario is active.
     """
@@ -54,7 +68,22 @@ def build_system_prompt(scenario: Scenario | None) -> str:
             + "; ".join(node_descriptions)
             + "."
         )
-    return f"{_BASE_PROMPT}\n{nodes_line}\n\n{_STYLE_MAP[RESPONSE_STYLE]}"
+
+    if active_drops is None:
+        rules_line = ""
+    elif active_drops:
+        rules_line = (
+            "\n\nActive DROP rules right now: "
+            + "; ".join(active_drops)
+            + ". When the user asks to re-enable, allow, restore, or unblock a "
+            "connection, call allow_traffic using the EXACT src, dst, and proto "
+            "from this list — one allow_traffic call per rule being re-enabled. "
+            "Do not invent a pair or proto that is not in this list."
+        )
+    else:
+        rules_line = "\n\nThere are currently no active DROP rules; all traffic flows freely."
+
+    return f"{_BASE_PROMPT}\n{nodes_line}{rules_line}\n\n{_STYLE_MAP[RESPONSE_STYLE]}"
 
 
 # Static fallback prompt for back-compat / contexts without an active scenario.

@@ -10,6 +10,17 @@ from app.lab.models import Scenario
 
 CONTAINERLAB_BIN = "/home/amir/.local/bin/containerlab"
 
+# A tiny TCP service every PC runs so the hosts are not empty idle containers:
+# they listen on :8080 and answer each connection. Run detached (PID 1 stays
+# `sleep infinity`, so the demo's connectivity never depends on this), it gives
+# a real, reachable service for future network/port scans to discover.
+PC_LISTENER_SCRIPT = (
+    "while true; do "
+    "printf 'HTTP/1.1 200 OK\\r\\nConnection: close\\r\\n\\r\\nalive: %s\\n' \"$(hostname)\" "
+    "| nc -l -p 8080 2>/dev/null; "
+    "done"
+)
+
 
 class LabAlreadyRunning(Exception):
     pass
@@ -88,6 +99,14 @@ class ContainerlabLabDriver:
             timeout=timeout,
         )
 
+    def _docker_exec_detached(self, container: str, cmd: list[str], timeout: int = 10) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["docker", "exec", "-d", container, *cmd],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
     def _wait_for_firewalld(self, container: str, timeout: int = 30) -> bool:
         for _ in range(timeout * 2):
             r = self._docker_exec(container, ["firewall-cmd", "--state"], timeout=5)
@@ -119,6 +138,13 @@ class ContainerlabLabDriver:
                         warnings.append(
                             f"{container}: ip route replace default via {iface.gateway} -> {r3.stderr.strip()}"
                         )
+            if node.role == "pc":
+                # Start the always-on listener (detached) so the PC is a live,
+                # reachable host rather than an idle container. Best-effort:
+                # a failure here must not block lab readiness.
+                rl = self._docker_exec_detached(container, ["sh", "-c", PC_LISTENER_SCRIPT])
+                if rl.returncode != 0:
+                    warnings.append(f"{container}: listener launch -> {rl.stderr.strip()}")
         return warnings
 
     def get_mgmt_ip(self, scenario_name: str, node_id: str) -> str | None:

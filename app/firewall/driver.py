@@ -89,18 +89,46 @@ class FirewalldDriver:
 
     def allow(self, src_ip: str | None, dst_ip: str | None, proto: str = "icmp") -> dict:
         # firewalld rich rules are first-match-wins at equal priority — a prior DROP
-        # would shadow this ACCEPT. Best-effort remove the matching DROP first.
-        removed: dict | None = None
+        # would shadow this ACCEPT, so the DROP must actually be removed.
+        #
+        # We deliberately ignore `proto` when removing and instead clear EVERY drop
+        # whose src/dst pair matches. Re-enabling a connection means "unblock these
+        # two hosts", and the LLM frequently passes the wrong proto on re-enable
+        # (e.g. "all" instead of "icmp"); a proto-exact delete then matches nothing
+        # and leaves the real drop in place. Reconstructing each delete from the
+        # PARSED rule guarantees the rich-rule string matches what was stored,
+        # because add and remove both go through fw-api's _build_rich_rule.
+        removed: list[dict] = []
         try:
-            removed = self._delete("/rules", {
-                "src_ip": src_ip, "dst_ip": dst_ip, "protocol": proto, "action": "drop",
-            })
-        except httpx.HTTPStatusError:
-            removed = None
+            for rule in self.list_rules().get("parsed", []):
+                if rule.get("action") != "drop":
+                    continue
+                # Match the pair in EITHER direction: "allow traffic between A and
+                # B" should clear the block regardless of which way the LLM (or the
+                # original block) ordered src/dst. A direction swap otherwise leaves
+                # the real drop in place.
+                if {rule.get("src_ip"), rule.get("dst_ip")} != {src_ip, dst_ip}:
+                    continue
+                # proto None == a protocol-less drop (a "proto: all" block); passing
+                # "all" makes _build_rich_rule emit no protocol clause, matching it.
+                del_proto = rule.get("proto") or "all"
+                try:
+                    r = self._delete("/rules", {
+                        "src_ip": rule.get("src_ip"),
+                        "dst_ip": rule.get("dst_ip"),
+                        "protocol": del_proto,
+                        "port": rule.get("port"),
+                        "action": "drop",
+                    })
+                    removed.append({"rule": rule.get("raw"), "result": r})
+                except httpx.HTTPStatusError as e:
+                    removed.append({"rule": rule.get("raw"), "error": str(e)})
+        except Exception as e:
+            removed.append({"error": f"list/remove failed: {e}"})
         added = self._post("/rules", {
             "src_ip": src_ip, "dst_ip": dst_ip, "protocol": proto, "action": "accept",
         })
-        return {"removed_drop": removed, "added_accept": added}
+        return {"removed_drops": removed, "added_accept": added}
 
     def list_rules(self) -> dict:
         raw = self._get("/rules")
