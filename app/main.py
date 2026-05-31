@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from app.engines.topology import TopologyEngine, LabAlreadyRunning, LabNotFound
 from app.engines.security import SecurityEngine
 from app.lab.models import Scenario
-from app.chat import call_ollama, validate_node_args, dispatch_tool, MAX_TOOL_ITERATIONS
+from app.chat import call_ollama, validate_node_args, dispatch_tool, MAX_TOOL_ITERATIONS, _node_ip_map
 from app.prompts import build_system_prompt
 from app.metrics import MetricsCollector
 
@@ -178,6 +178,40 @@ def get_rules() -> dict:
     if not security.connected:
         return {"forward_rules": [], "zone_rules": [], "parsed": []}
     return security.list_rules()
+
+
+class RuleRequest(BaseModel):
+    src: str
+    dst: str
+    proto: str = "icmp"
+
+
+@app.post("/rules")
+def add_rule(req: RuleRequest) -> dict:
+    """Add a firewall DROP rule from the console form.
+
+    This is the single-surface payoff of the engine refactor: it resolves node
+    IDs to IPs and calls `security.block(...)` — the EXACT same engine method the
+    LLM's `block_traffic` tool dispatches to (app.chat.dispatch_tool) — using the
+    same node validation, the same `_node_ip_map`, and the same `proto` default
+    ("icmp"). So a rule added via the form and a rule added via the LLM for the
+    same intent are byte-identical, and both mirror into GET /rules (the one
+    source the `/` topology view reads).
+    """
+    if not _active_scenario:
+        raise HTTPException(status_code=400, detail="No lab is running. Start a lab first.")
+    if not security.connected:
+        raise HTTPException(status_code=400, detail="Firewall driver not connected.")
+
+    validation_err = validate_node_args({"src": req.src, "dst": req.dst}, _active_scenario)
+    if validation_err:
+        raise HTTPException(status_code=400, detail=validation_err)
+
+    ip_map = _node_ip_map(_active_scenario)
+    src_ip = ip_map.get(req.src)
+    dst_ip = ip_map.get(req.dst)
+    result = security.block(src_ip, dst_ip, req.proto)
+    return {"status": "added", "src": req.src, "dst": req.dst, "proto": req.proto, "result": result}
 
 
 class ChatRequest(BaseModel):
