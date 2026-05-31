@@ -36,5 +36,13 @@ Gate execution: I bring up the lab + backend + frontend and drive the gate via t
       new fw 12936b03..., drops cleared, ip -6 empty on all 5, fw reconnected; frontend tsc exit 0.
 - [ ] 2c. Console/debug page (react-router + PTY WebSocket + xterm.js + fw rule panel) — NEXT SESSION (large)
 
-## Write-back
-- [ ] Update vault README + session-log + decisions-log before session ends
+## Write-back — DONE 2026-05-31
+- [x] session-log.md (## 2026-05-31 #1), README (Brain Dump + status), decisions-log (impl entry), Demo-2 plan status header
+
+## Session summary (2026-05-31)
+Shipped Phase 1 (engine refactor) + 2a (IPv6) + 2b (Reset). 4 commits: 2f2a877, 623073f, 9a19088, b1fd7c7.
+NEXT SESSION: Phase 2c console/debug page — react-router /console + PTY-over-WebSocket (docker SDK exec_run
+socket=True, fallback pty.openpty+subprocess) + xterm.js per node + fw rule view/add panel calling
+security.block/list (SAME engine method as block_traffic). Then Phase 3 (scenarios dropdown, real PC services,
+multi-scan). Engine layer (app/engines/security.py, topology.py) is the seam the console plugs into.
+Stack left running: uvicorn :8000 + fresh central-hub lab (IPv6-off, 0 drops).

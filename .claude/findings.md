@@ -48,3 +48,7 @@
    disconnect→None on lab_stop, None-safe early returns in _describe_active_drops + GET /rules. This is where wiring drifts silently.
 - Keep IPv6 OUT of Phase 1 diff (2a changes _to_containerlab output → lands after Phase 1 commit).
 - dockerscan absent: baseline errored identically ⇒ "same as pre-refactor" still holds; don't block installing mid-gate.
+
+## Post-implementation notes (2026-05-31)
+- Gate fully closed: all 7 tools exercised post-refactor (block/allow/flush/list/ping/vuln + describe_state via /chat "describe the network" → all 5 nodes).
+- Nuance on "lab_start behaviour unchanged" (2b): _active_scenario is now set AFTER _deploy_and_connect (was before the fw-connect loop). End state identical; only delta = a ~1-3s window where /health reports lab_active:false instead of true during fw connect. Immaterial (frontend gates on labReady = labActive && fwConnected, both false during connect). Noted for accuracy; not a real behaviour change.
