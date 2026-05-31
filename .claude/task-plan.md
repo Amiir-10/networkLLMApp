@@ -34,9 +34,33 @@ Gate execution: I bring up the lab + backend + frontend and drive the gate via t
       (NOT restart); shared _deploy_and_connect helper (lab_start behaviour unchanged). Frontend: amber Reset button +
       confirm + ChatPane remount-key to clear visible chat. VERIFIED: seeded DROP + fw container 2631286b... → reset →
       new fw 12936b03..., drops cleared, ip -6 empty on all 5, fw reconnected; frontend tsc exit 0.
-- [ ] 2c. Console/debug page (react-router + PTY WebSocket + xterm.js + fw rule panel) — NEXT SESSION (large)
+- [~] 2c. Console/debug page (react-router + PTY WebSocket + xterm.js + fw rule panel) — IN PROGRESS (session 2026-05-31 #2)
 
-## Write-back — DONE 2026-05-31
+## Phase 2c — Console/debug page (session 2026-05-31 #2)
+Decisions (Amir, this session):
+- Transport = **pty.openpty() + `docker exec -it`** (zero new Python deps; real kernel PTY; "actually a real console"). NOT the docker SDK.
+- UI = functional & clean (current minimal Tailwind look).
+- Commit cadence = **incremental: backend commit (verified) → frontend commit (verified)** — guards against usage running out mid-way.
+
+### Backend
+- [x] **commit 1 = `5f7da08`** `POST /rules` in main.py: body {src,dst,proto=icmp}; guards lab+fw connected; validate_node_args; resolve via chat._node_ip_map; calls `security.block(...)` (SAME method as block_traffic — the single-surface payoff). VERIFIED by deterministic in-process parity test (`/tmp/parity_test.py`, run with `PYTHONPATH=/home/amir/thesis/networkLLMApp .venv/bin/python /tmp/parity_test.py`): form-added DROP byte-identical to LLM-added DROP (same rich-rule string + parsed fields), proto omitted == icmp, fw left clean. PARITY TEST PASS.
+- [ ] **commit 1b (NEXT)** `GET /ws/console/{scenario}/{node}` (async) — PTY terminal. FULL DESIGN in findings.md "## Phase 2c WebSocket PTY design (ready to implement)". Summary: validate node ∈ active scenario; container `clab-{scenario}-{node}`; shell=`/usr/bin/bash` if fw else `/bin/sh`; `pty.openpty()` + `Popen(["docker","exec","-it",ctr,shell], stdin=slave,stdout=slave,stderr=slave, start_new_session=True)`; bridge output via `loop.add_reader(master_fd,…)` (NO thread — non-blocking fd), input via `await ws.receive_text/json`; protocol = JSON frames {type:input|resize}; resize via `ioctl(master, TIOCSWINSZ, struct.pack("HHHH",rows,cols,0,0))`; teardown: remove_reader+close fds+terminate Popen on EOF/disconnect.
+- [ ] requirements.txt unchanged (pty/termios/fcntl/struct/subprocess all stdlib).
+- [ ] VERIFY ws backend: python ws client → real shell, `ip -6 addr` empty, `ping pc2` works, resize honored. Commit 1b.
+
+### Frontend (commit 2)
+- [ ] deps: react-router-dom @xterm/xterm @xterm/addon-fit.
+- [ ] main.tsx: BrowserRouter; routes `/`=App (unchanged behaviour), `/console`=ConsolePage; minimal top-nav link toggle.
+- [ ] TopologyPane: add optional `onNodeClick` prop (non-breaking) → ReactFlow onNodeClick.
+- [ ] pages/ConsolePage.tsx: full-screen TopologyPane (reuse, no chat); click node → slide-in panel.
+- [ ] components/ConsoleTerminal.tsx: xterm + fit + ws; onData→send input, onResize→send resize, onmessage→term.write.
+- [ ] fw panel: rules list (fetchRules) + add-rule form (api.addRule → POST /rules); refetch after add. Main `/` view mirrors because both read /rules.
+- [ ] api.ts: addRule(src,dst,proto) + wsConsoleUrl(scenario,node).
+- [ ] VERIFY frontend: /console → click pc1 → real shell + ip -6 empty + ping pc2; click fw → add DROP via form → appears in / view; LLM + form produce identical rules. Commit 2.
+
+NOTE (Phase-3 carry): console reuses central-hub-specific TopologyPane (hardcoded node positions). Generalizing clickable nodes from arbitrary scenarios is Phase 3 (scenario dropdown) — acceptable for 2c single-scenario.
+
+## Write-back — DONE 2026-05-31 (session #1)
 - [x] session-log.md (## 2026-05-31 #1), README (Brain Dump + status), decisions-log (impl entry), Demo-2 plan status header
 
 ## Session summary (2026-05-31)
