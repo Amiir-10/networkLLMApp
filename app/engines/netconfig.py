@@ -13,6 +13,17 @@ import time
 
 from app.lab.models import Scenario
 
+# IPv6 standing rule (Amir, 2026-05-30): IPv6 is disabled in EVERY container, on
+# every topology, regardless of image. These keys are the single source of truth —
+# topology.py stamps them into every node's containerlab `sysctls` (primary,
+# applied at creation so it holds on any image), and disable_ipv6() re-applies
+# them inside each running container post-deploy (belt-and-suspenders).
+IPV6_DISABLE_SYSCTLS = {
+    "net.ipv6.conf.all.disable_ipv6": 1,
+    "net.ipv6.conf.default.disable_ipv6": 1,
+    "net.ipv6.conf.lo.disable_ipv6": 1,
+}
+
 # A tiny TCP service every PC runs so the hosts are not empty idle containers:
 # they listen on :8080 and answer each connection. Run detached (PID 1 stays
 # `sleep infinity`, so the demo's connectivity never depends on this), it gives
@@ -61,11 +72,24 @@ def launch_pc_listener(container: str) -> subprocess.CompletedProcess:
 def disable_ipv6(container: str) -> list[str]:
     """Belt-and-suspenders IPv6 disable inside a running container.
 
-    Phase 1: no-op (kept behavior-preserving). Phase 2a fills this in with
-    `sysctl -w net.ipv6.conf.{all,default,lo}.disable_ipv6=1`, complementing the
-    topology-generator sysctls so the standing rule holds on any image.
+    Complements the topology-generator sysctls (which apply at creation) by
+    re-asserting them on the live container and flushing any IPv6 address that
+    slipped onto an interface containerlab attached after creation. Best-effort:
+    failures are returned as warnings, never raised. Writes /proc directly so it
+    works on busybox (alpine) and procps (debian) alike.
     """
-    return []
+    warnings: list[str] = []
+    for scope in ("all", "default", "lo"):
+        proc_path = f"/proc/sys/net/ipv6/conf/{scope}/disable_ipv6"
+        r = docker_exec(container, ["sh", "-c", f"echo 1 > {proc_path}"])
+        # A container with IPv6 compiled out has no such path — that's already
+        # "disabled", so a missing path is not a warning.
+        if r.returncode != 0 and "No such file" not in r.stderr:
+            warnings.append(f"{container}: disable_ipv6 {scope} -> {r.stderr.strip()}")
+    # Drop any residual IPv6 addrs (e.g. link-local) on already-up interfaces.
+    docker_exec(container, ["sh", "-c", "ip -6 addr flush scope global 2>/dev/null; "
+                                        "ip -6 addr flush scope link 2>/dev/null || true"])
+    return warnings
 
 
 def configure_nodes(scenario_name: str, scenario: Scenario) -> list[str]:
@@ -77,6 +101,9 @@ def configure_nodes(scenario_name: str, scenario: Scenario) -> list[str]:
     warnings: list[str] = []
     for node in scenario.nodes:
         container = f"clab-{scenario_name}-{node.id}"
+        # Standing rule: IPv6 off on every node, every image (belt-and-suspenders
+        # to the containerlab sysctls), before bringing interfaces up.
+        warnings.extend(disable_ipv6(container))
         if node.role == "firewall":
             if not wait_for_firewalld(container):
                 warnings.append(f"{container}: firewalld did not become ready in time")

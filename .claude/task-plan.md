@@ -27,9 +27,11 @@ Gate execution: I bring up the lab + backend + frontend and drive the gate via t
 - [x] Commit Phase 1 → (committing now)
 
 ## Phase 2 — Must-haves [start this session]
-- [ ] 2a. Disable IPv6 at topology-generator level (sysctls on every node) + netconfig.disable_ipv6 belt-and-suspenders; verify `ip -6 addr` empty on every node; commit
-- [ ] 2b. Reset button (destroy+redeploy + clear history) — if time
-- [ ] 2c. Console/debug page (react-router + PTY WebSocket + xterm.js + fw rule panel) — likely next session
+- [x] 2a. Disable IPv6: sysctls on every node in _to_containerlab + netconfig.disable_ipv6 belt-and-suspenders.
+      BEFORE: every node had global 3fff:172:20:20::x + link-local. AFTER fresh redeploy: `ip -6 addr` empty on ALL 5 nodes,
+      ip_forward still 1 on fw, IPv4 block/allow/ping regression PASS. Commit next.
+- [ ] 2b. Reset button (destroy+redeploy + clear history) — in progress
+- [ ] 2c. Console/debug page (react-router + PTY WebSocket + xterm.js + fw rule panel) — NEXT SESSION (large)
 
 ## Write-back
 - [ ] Update vault README + session-log + decisions-log before session ends

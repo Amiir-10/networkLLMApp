@@ -52,17 +52,22 @@ class TopologyEngine:
         topology: dict = {"nodes": {}, "links": []}
         iface_index: dict[tuple[str, str], int] = {}
         for node in scenario.nodes:
+            # IPv6 disabled on every node regardless of image (standing rule),
+            # stamped at creation. Merge with the firewall's ip_forward.
+            sysctls = dict(netconfig.IPV6_DISABLE_SYSCTLS)
             if node.role == "firewall":
+                sysctls["net.ipv4.ip_forward"] = 1
                 clab_node: dict = {
                     "kind": "linux",
                     "image": node.image,
-                    "sysctls": {"net.ipv4.ip_forward": 1},
+                    "sysctls": sysctls,
                 }
             else:
                 clab_node = {
                     "kind": "linux",
                     "image": node.image,
                     "cmd": "sleep infinity",
+                    "sysctls": sysctls,
                 }
             topology["nodes"][node.id] = clab_node
             for idx, iface in enumerate(node.interfaces, start=1):
