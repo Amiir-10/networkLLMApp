@@ -6,6 +6,7 @@ import {
   fetchRules,
   startLab,
   stopLab,
+  resetLab,
   type HealthResponse,
   type ParsedRule,
   type ToolCallResult,
@@ -38,6 +39,9 @@ export default function App() {
   const [labError, setLabError] = useState<string | null>(null);
   const [firewallRules, setFirewallRules] = useState<ParsedRule[]>([]);
   const [pingEvent, setPingEvent] = useState<PingEvent | null>(null);
+  // Bumped on reset to force-remount ChatPane, clearing the visible conversation
+  // (backend history is cleared server-side by /lab/reset).
+  const [chatResetKey, setChatResetKey] = useState(0);
   const pingIdRef = useRef(0);
 
   const pollHealth = useCallback(async () => {
@@ -110,6 +114,29 @@ export default function App() {
     }
   }
 
+  async function handleResetLab() {
+    if (
+      !window.confirm(
+        "Reset the lab? This destroys and redeploys every container and clears the chat. Takes ~30–60s."
+      )
+    ) {
+      return;
+    }
+    setLabLoading(true);
+    setLabError(null);
+    try {
+      await resetLab(SCENARIO);
+      await pollHealth();
+      setFirewallRules([]);
+      setPingEvent(null);
+      setChatResetKey((k) => k + 1);
+    } catch (err) {
+      setLabError(String(err));
+    } finally {
+      setLabLoading(false);
+    }
+  }
+
   const handleChatComplete = useCallback(
     (toolCalls: ToolCallResult[]) => {
       if (toolCalls.some((tc) => RULE_MUTATING_TOOLS.has(tc.tool))) {
@@ -171,7 +198,7 @@ export default function App() {
             </select>
           </div>
           <div className="h-[calc(100%-49px)]">
-            <ChatPane model={model} labActive={labReady} onChatComplete={handleChatComplete} />
+            <ChatPane key={chatResetKey} model={model} labActive={labReady} onChatComplete={handleChatComplete} />
           </div>
         </div>
       </div>
@@ -192,6 +219,14 @@ export default function App() {
             className="bg-red-600 text-white px-3 py-1.5 rounded text-xs font-medium disabled:opacity-40 hover:bg-red-700 transition-colors"
           >
             {labLoading && labActive ? "Stopping..." : "Stop Lab"}
+          </button>
+          <button
+            onClick={handleResetLab}
+            disabled={labLoading || !labActive}
+            title="Destroy + redeploy all containers and clear the chat"
+            className="bg-amber-600 text-white px-3 py-1.5 rounded text-xs font-medium disabled:opacity-40 hover:bg-amber-700 transition-colors"
+          >
+            {labLoading && labActive ? "Working..." : "Reset"}
           </button>
         </div>
 

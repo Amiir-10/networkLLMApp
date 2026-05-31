@@ -51,19 +51,13 @@ def _load_scenario(scenario_name: str) -> Scenario:
     return Scenario.model_validate(raw)
 
 
-@app.post("/lab/start/{scenario_name}")
-def lab_start(scenario_name: str) -> dict:
-    global _active_scenario, _conversation_history
-    _conversation_history = []
-    scenario = _load_scenario(scenario_name)
-    try:
-        result = topology.start(scenario)
-    except LabAlreadyRunning as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+def _deploy_and_connect(scenario: Scenario, scenario_name: str) -> dict:
+    """Deploy the lab and connect the security engine to the firewall.
 
-    _active_scenario = scenario
+    Shared by lab_start and lab_reset. May raise LabAlreadyRunning / RuntimeError
+    from topology.start; callers translate those to HTTP errors.
+    """
+    result = topology.start(scenario)
     fw_node = next((n for n in scenario.nodes if n.role == "firewall"), None)
     if fw_node:
         mgmt_ip = topology.get_mgmt_ip(scenario_name, fw_node.id)
@@ -72,14 +66,28 @@ def lab_start(scenario_name: str) -> dict:
             security.connect(mgmt_url=f"http://{mgmt_ip}:8080")
             for _ in range(30):
                 try:
-                    fw_health = security.health()
-                    result["firewall"] = fw_health
+                    result["firewall"] = security.health()
                     break
                 except Exception:
                     _time.sleep(1)
             else:
                 result["firewall_warning"] = "firewalld API did not become ready in 30s"
+    return result
 
+
+@app.post("/lab/start/{scenario_name}")
+def lab_start(scenario_name: str) -> dict:
+    global _active_scenario, _conversation_history
+    _conversation_history = []
+    scenario = _load_scenario(scenario_name)
+    try:
+        result = _deploy_and_connect(scenario, scenario_name)
+    except LabAlreadyRunning as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    _active_scenario = scenario
     return result
 
 
@@ -96,6 +104,41 @@ def lab_stop(scenario_name: str) -> dict:
     _active_scenario = None
     security.disconnect()
     return {"status": "stopped", "scenario": scenario_name}
+
+
+@app.post("/lab/reset/{scenario_name}")
+def lab_reset(scenario_name: str) -> dict:
+    """Full clean slate: destroy + redeploy + clear all in-memory state.
+
+    Deliberately a destroy+redeploy, NOT a container restart — restarting a
+    long-lived lab triggers the firewalld dbus crash-loop. Teardown is
+    best-effort so a reset still works from a half-broken lab; a genuinely
+    still-running lab would surface as LabAlreadyRunning on the redeploy.
+    """
+    global _active_scenario, _conversation_history
+    scenario = _load_scenario(scenario_name)
+
+    # 1. Clear in-memory LLM state (Ollama is stateless per request).
+    _conversation_history = []
+    # 2. Best-effort destroy of whatever is currently up.
+    try:
+        topology.stop(scenario_name)
+    except (LabNotFound, RuntimeError):
+        pass
+    security.disconnect()
+    _active_scenario = None
+
+    # 3. Redeploy fresh.
+    try:
+        result = _deploy_and_connect(scenario, scenario_name)
+    except LabAlreadyRunning as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    _active_scenario = scenario
+    result["reset"] = True
+    return result
 
 
 @app.get("/lab/state")

@@ -62,6 +62,12 @@ export async function stopLab(scenario: string): Promise<unknown> {
   return res.json();
 }
 
+export async function resetLab(scenario: string): Promise<unknown> {
+  const res = await fetch(`${BASE}/lab/reset/${scenario}`, { method: "POST" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export async function sendChat(message: string, model: string): Promise<ChatResponse> {
   const res = await fetch(`${BASE}/chat`, {
     method: "POST",
