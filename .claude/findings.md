@@ -273,3 +273,17 @@ output", and uvicorn never actually restarts). This is the real cause of the "14
 pkill's normal non-zero-exit-on-no-match. **Fix: bracket-trick the pattern so it can't match the pkill
 command line itself:** `pkill -f "[u]vicorn app.main"`. Verified it stops uvicorn cleanly and the chain
 continues. (Restart still uses `;` not `&&`, and never pipe server stdout through `head`.)
+
+### REFINEMENT (2026-06-01 #2): the bracket-trick FAILS if the restart shares the line
+`pkill -f "[u]vicorn app.main" ; sleep 1 ; (.venv/bin/uvicorn app.main:app ...)` still exited 144 and
+killed the backend without restarting it. Why: the bracket trick only stops the pattern matching the
+*pkill arg* — but the SAME shell command line also contains the restart's literal `uvicorn app.main:app`,
+so `pkill -f` matches the parent shell's own cmdline (it holds the whole line) and SIGTERMs it before the
+restart runs. **Fix: run the kill and the restart as SEPARATE Bash calls** (different shell processes).
+Worked first try once split: call 1 = `pkill -f "[u]vicorn app.main"`; call 2 = the `(uvicorn … &); curl`.
+
+### Backend state desync if you tear a lab down OUTSIDE the backend
+`containerlab destroy` (any teardown not via `POST /lab/stop`) leaves the backend's in-memory
+`_active_scenario` + security connections stale → `/health` keeps reporting `lab_active:true` with the
+old scenario/firewalls though no containers exist. Fix = restart uvicorn, OR always stop via
+`POST /lab/stop/{scenario}`. (Hit during Phase D verification.)
