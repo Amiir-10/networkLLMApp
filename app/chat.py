@@ -127,8 +127,9 @@ def _node_ip_map(scenario: Scenario) -> dict[str, str]:
     result = {}
     for node in scenario.nodes:
         for iface in node.interfaces:
-            ip = iface.ip.split("/")[0]
-            result[node.id] = ip
+            if not iface.ip:
+                continue  # switch ports are L2-only; switches get no map entry
+            result[node.id] = iface.ip.split("/")[0]
             break
     return result
 
@@ -201,7 +202,7 @@ def dispatch_tool(
     elif name == "describe_state":
         nodes_info = []
         for n in scenario.nodes:
-            ips = [f"{iface.ip} -> {iface.to}" for iface in n.interfaces]
+            ips = [f"{iface.ip or 'L2'} -> {iface.to}" for iface in n.interfaces]
             nodes_info.append({"id": n.id, "role": n.role, "interfaces": ips})
         rules = security.list_rules()
         return {"topology": nodes_info, "firewall_rules": rules}

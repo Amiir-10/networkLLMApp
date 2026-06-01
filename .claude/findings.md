@@ -227,6 +227,24 @@ of proto — so a tcp:80 drop is cleared by an icmp-proto allow. Don't "fix" by 
   `dispatch_tool` block/allow; `_describe_active_drops` adds `[on <fw>]` ONLY when >1 fw connected
   (single-fw prompt stays byte-identical). `/health` gains `firewalls: [...]`. New `GET /scenarios`.
 
+## Phase C — switches + multi-subnet routing + two-subnet-ixp (2026-06-01 #2)
+- **Model:** `Interface.ip: str|None` (switch ports L2-only); `Route{to:cidr, via:ip}`; `Node.routes`;
+  `Node.ip_required_off_switch` validator (non-switch ifaces MUST have ip). None-IP would crash
+  `_node_ip_map`/`describe_state`/`_describe_active_drops` — all three now guard `if iface.ip`.
+- **topology `_to_containerlab`:** `role in (firewall, router)` → `ip_forward=1`; sleep-infinity for
+  every non-firewall idle node (so routers/switches stay alive, fw runs firewalld as PID 1).
+- **netconfig switch branch:** `ip link add br0 type bridge; set br0 up; for ethN in data ifaces:
+  set master br0 + up; continue` (no L3/routes/launch). Other roles apply `node.routes` via
+  `ip route replace <to> via <via>` after iface config. Runs AFTER disable_ipv6 → bridged ports
+  stay IPv6-free (verified `ip -6 addr` empty on all 13 incl. switches).
+- **two-subnet-ixp addressing (locked):** LAN-A 10.10.1.0/24 (pc*a .11/.12/.13, fwa .1), A-transit
+  10.10.255.0/30 (fwa .1, routera .2), IXP 100.64.0.0/24 (routera .1, routerb .2, via `ixp` switch),
+  B-transit 10.20.255.0/30, LAN-B 10.20.1.0/24. routerA routes: 10.10.1.0/24→fwa, 10.20.0.0/16→
+  routerb; routerB mirror. fw default via its router. **Block lands at the SOURCE subnet's firewall**
+  (resolve_firewall by src subnet): block pc1a→pc1b ⇒ DROP on fwa.
+- **Verified live:** cross-subnet ping/HTTP/postgres all work through the IXP; multi-fw block/allow
+  surgical + correct. 0 netconfig warnings on a clean deploy.
+
 ## LESSON: `pkill -f "uvicorn app.main"` kills its OWN shell (exit 144)
 `pkill -f <pat>` matches full command lines — the shell running the pkill has `<pat>` in its own argv,
 so pkill SIGTERMs its parent shell before the rest of the `;`-chain runs (looks like "exit 144, no

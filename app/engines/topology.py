@@ -60,11 +60,14 @@ class TopologyEngine:
                 "image": node.image,
                 "sysctls": sysctls,
             }
-            if node.role == "firewall":
+            # Firewalls AND routers forward IPv4 (routers are L3 transit between
+            # subnets; the firewall already did). Switches are L2 — no forwarding.
+            if node.role in ("firewall", "router"):
                 sysctls["net.ipv4.ip_forward"] = 1
-            elif node.idle:
-                # Keep a bare host alive. Omitted when the image runs its own
-                # service as PID 1 (nginx, postgres, …) so we don't shadow it.
+            # Keep a bare host alive with sleep infinity, UNLESS its image runs a
+            # service as PID 1 (idle=False: nginx, postgres) or it's the firewall
+            # (firewalld is its PID 1). Routers/switches are idle alpine → kept alive.
+            if node.role != "firewall" and node.idle:
                 clab_node["cmd"] = "sleep infinity"
             if node.env:
                 clab_node["env"] = dict(node.env)

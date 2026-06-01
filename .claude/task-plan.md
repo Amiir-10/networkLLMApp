@@ -97,8 +97,25 @@ resolved deterministically in backend), subnet "cloud" visual for all scenarios.
       GATE: `/tmp/gate_b.py` deployed central-hub, drove block/allow/two-pair-flush/port-block
       deterministically (no LLM) — all PASS, drops tag `fw`, describe text byte-identical (no
       `[on fw]` for a single fw). Vuln scan skipped (scanner untouched). Lab torn down clean.
-- [ ] Phase C — switches + multi-subnet routing + `scenarios/two-subnet-ixp.yaml`.
-- [ ] Phase D — data-driven frontend + subnet clouds + scenario dropdown + multi-fw display.
+- [x] **Phase C — switches + multi-subnet routing + `scenarios/two-subnet-ixp.yaml`.**
+      Model: `Interface.ip` now optional (switch L2 ports), `Route{to,via}`, `Node.routes`,
+      validator `ip_required_off_switch` (only switches may be IP-less). `_to_containerlab`: routers
+      get `ip_forward=1` (+ kept-alive); switches = idle alpine bridge. `configure_nodes`: switch
+      branch builds `br0` + enslaves all data eth's (no L3), other roles apply `node.routes` after
+      ifaces. None-IP guards added to `_node_ip_map`, `describe_state`, `_describe_active_drops`.
+      `scenarios/two-subnet-ixp.yaml`: 13 nodes, 2 mirror subnets (LAN 10.10.1/10.20.1.0/24) each
+      `3 PCs → switch → fw → router`, routers peer over IXP `100.64.0.0/24` (an `ixp` switch node).
+      **VERIFIED on the live lab:** 0 netconfig warnings; `ip -6 addr` empty on all 13; all 3
+      switches bridging; cross-subnet ping pc1a→pc1b 0% loss (full 7-hop IXP path); cross-subnet
+      nginx ("Welcome to nginx!") + postgres ("accepting connections"); both fw running; shells into
+      switcha/ixp; **multi-fw targeting**: block pc1a→pc1b lands tagged `fwa` → ping 100% loss while
+      pc2a→pc1b survives → allow clears it → ping restored. Committed.
+- [ ] **Phase D — data-driven frontend + subnet clouds + scenario dropdown + multi-fw display. NOT STARTED.**
+      The whole frontend is still hardcoded to central-hub (`topology.ts` INITIAL_NODES/STATIC_EDGES/
+      IP_TO_NODE_ID/PHYSICAL_LINKS; `App.tsx:16`+`ConsolePage.tsx:12` `const SCENARIO`). Backend is
+      ready: `GET /scenarios`, and the active scenario's nodes/interfaces give everything to derive
+      topology + subnets + the link graph. Sub-steps + central-hub regression gate: see the plan
+      `~/.claude/plans/jiggly-marinating-tide.md` Phase D and the vault handoff note.
 
 ## Session summary (2026-05-31)
 Shipped Phase 1 (engine refactor) + 2a (IPv6) + 2b (Reset). 4 commits: 2f2a877, 623073f, 9a19088, b1fd7c7.

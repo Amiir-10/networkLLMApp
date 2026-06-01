@@ -172,6 +172,7 @@ def _describe_active_drops() -> list[str]:
         iface.ip.split("/")[0]: n.id
         for n in _active_scenario.nodes
         for iface in n.interfaces
+        if iface.ip
     }
     try:
         parsed = security.list_rules().get("parsed", [])

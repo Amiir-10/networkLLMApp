@@ -95,11 +95,32 @@ def configure_nodes(scenario_name: str, scenario: Scenario) -> list[str]:
         # Standing rule: IPv6 off on every node, every image (belt-and-suspenders
         # to the containerlab sysctls), before bringing interfaces up.
         warnings.extend(disable_ipv6(container))
+
+        # A switch is pure L2: bridge all its data interfaces (eth1..ethN), no IP,
+        # no routes. Members are brought up AFTER disable_ipv6 set all.disable_ipv6=1,
+        # so the bridged ports stay IPv6-free.
+        if node.role == "switch":
+            for cmd in (["ip", "link", "add", "br0", "type", "bridge"],
+                        ["ip", "link", "set", "br0", "up"]):
+                r = docker_exec(container, cmd)
+                if r.returncode != 0 and "File exists" not in r.stderr:
+                    warnings.append(f"{container}: {' '.join(cmd)} -> {r.stderr.strip()}")
+            for idx in range(1, len(node.interfaces) + 1):
+                eth = f"eth{idx}"
+                for cmd in (["ip", "link", "set", eth, "master", "br0"],
+                            ["ip", "link", "set", eth, "up"]):
+                    r = docker_exec(container, cmd)
+                    if r.returncode != 0:
+                        warnings.append(f"{container}: {' '.join(cmd)} -> {r.stderr.strip()}")
+            continue  # no L3, no static routes, no launch on a switch
+
         if node.role == "firewall":
             if not wait_for_firewalld(container):
                 warnings.append(f"{container}: firewalld did not become ready in time")
         for idx, iface in enumerate(node.interfaces, start=1):
             eth = f"eth{idx}"
+            if not iface.ip:
+                continue  # defensive: only switches are IP-less (handled above)
             r1 = docker_exec(container, ["ip", "addr", "add", iface.ip, "dev", eth])
             if r1.returncode != 0 and "File exists" not in r1.stderr:
                 warnings.append(f"{container}: ip addr add {iface.ip} dev {eth} -> {r1.stderr.strip()}")
@@ -114,6 +135,14 @@ def configure_nodes(scenario_name: str, scenario: Scenario) -> list[str]:
                     warnings.append(
                         f"{container}: ip route replace default via {iface.gateway} -> {r3.stderr.strip()}"
                     )
+        # Extra static routes (multi-subnet: reach a non-adjacent subnet via a
+        # specific next-hop). Applied after interfaces so the next-hops are up.
+        for route in node.routes:
+            rr = docker_exec(container, ["ip", "route", "replace", route.to, "via", route.via])
+            if rr.returncode != 0:
+                warnings.append(
+                    f"{container}: ip route replace {route.to} via {route.via} -> {rr.stderr.strip()}"
+                )
         if node.launch:
             # Best-effort: a failure here must not block lab readiness.
             rl = launch_service(container, node.launch)
