@@ -44,9 +44,11 @@ Decisions (Amir, this session):
 
 ### Backend
 - [x] **commit 1 = `5f7da08`** `POST /rules` in main.py: body {src,dst,proto=icmp}; guards lab+fw connected; validate_node_args; resolve via chat._node_ip_map; calls `security.block(...)` (SAME method as block_traffic — the single-surface payoff). VERIFIED by deterministic in-process parity test (`/tmp/parity_test.py`, run with `PYTHONPATH=/home/amir/thesis/networkLLMApp .venv/bin/python /tmp/parity_test.py`): form-added DROP byte-identical to LLM-added DROP (same rich-rule string + parsed fields), proto omitted == icmp, fw left clean. PARITY TEST PASS.
-- [ ] **commit 1b (NEXT)** `GET /ws/console/{scenario}/{node}` (async) — PTY terminal. FULL DESIGN in findings.md "## Phase 2c WebSocket PTY design (ready to implement)". Summary: validate node ∈ active scenario; container `clab-{scenario}-{node}`; shell=`/usr/bin/bash` if fw else `/bin/sh`; `pty.openpty()` + `Popen(["docker","exec","-it",ctr,shell], stdin=slave,stdout=slave,stderr=slave, start_new_session=True)`; bridge output via `loop.add_reader(master_fd,…)` (NO thread — non-blocking fd), input via `await ws.receive_text/json`; protocol = JSON frames {type:input|resize}; resize via `ioctl(master, TIOCSWINSZ, struct.pack("HHHH",rows,cols,0,0))`; teardown: remove_reader+close fds+terminate Popen on EOF/disconnect.
-- [ ] requirements.txt unchanged (pty/termios/fcntl/struct/subprocess all stdlib).
-- [ ] VERIFY ws backend: python ws client → real shell, `ip -6 addr` empty, `ping pc2` works, resize honored. Commit 1b.
+- [x] **commit 1b = `0a2db33`** `GET /ws/console/{scenario}/{node}` (async) — PTY terminal. Implemented per the findings design with TWO deviations (both improvements, see findings "Phase 2c part 2 — implementation notes"):
+      (1) output goes through a single `asyncio.Queue` drained by one writer task instead of `create_task(ws.send_text)` per read — guarantees ordered, non-overlapping sends (concurrent send_text on one ws is unsafe under bursty output);
+      (2) `start_new_session=True` replaced by `preexec_fn` doing `setsid()` + `ioctl(0, TIOCSCTTY)` — makes the slave the child's controlling TTY so `docker exec` forwards SIGWINCH and **resize actually propagates into the container** (it was a no-op without this). Plus a sane initial TIOCSWINSZ before Popen.
+- [x] requirements.txt unchanged (pty/termios/fcntl/struct/subprocess all stdlib).
+- [x] VERIFIED via `/tmp/ws_verify.py` (websockets 16.0 in .venv) against live central-hub: pc1 real shell, `ip -6 addr` empty, ping pc2 0% loss; fw `firewall-cmd --state` running, `stty size`=40 120 (resize honored); unknown node closes 4404; no orphaned `docker exec` after close. ALL PASS. Committed 1b.
 
 ### Frontend (commit 2)
 - [ ] deps: react-router-dom @xterm/xterm @xterm/addon-fit.
