@@ -46,6 +46,7 @@ def health() -> dict:
     return {
         "status": "ok",
         "lab_active": _active_scenario is not None,
+        "scenario": _active_scenario.name if _active_scenario else None,
         "firewall_connected": security.connected,
         "firewalls": security.firewall_ids(),
     }
@@ -209,6 +210,14 @@ def list_scenarios() -> list[dict]:
             out.append({"name": f.stem, "description": ""})
     out.sort(key=lambda s: (s["name"] != "central-hub", s["name"]))
     return out
+
+
+@app.get("/scenarios/{scenario_name}")
+def get_scenario(scenario_name: str) -> dict:
+    """Full node/interface graph for one scenario (the frontend derives the
+    topology, subnets, link graph and layout from this — no YAML on the client).
+    Reads the YAML; does NOT require the lab to be running."""
+    return _load_scenario(scenario_name).model_dump()
 
 
 @app.get("/rules")

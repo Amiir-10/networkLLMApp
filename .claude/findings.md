@@ -245,6 +245,27 @@ of proto — so a tcp:80 drop is cleared by an icmp-proto allow. Don't "fix" by 
 - **Verified live:** cross-subnet ping/HTTP/postgres all work through the IXP; multi-fw block/allow
   surgical + correct. 0 netconfig warnings on a clean deploy.
 
+## Phase D — data-driven frontend (2026-06-01 #2)
+- **`gui/src/topology.ts` is now a builder, not constants.** `buildTopology(graph)` → `{deviceNodes,
+  cloudNodes, edges, ipToNodeId, firewallIds, wireIdForHop, pathWires, pathNodes}`. Layout = `@dagrejs/dagre`
+  rankdir LR (both scenarios are trees → clean). Edge handles chosen post-layout from relative x/y.
+- **Subnet clouds = non-interactive background RF nodes** (`type:"cloud"`, zIndex 0, selectable/draggable
+  false, `pointer-events-none`), sized to the bbox of their members + padding. A boundary device (fw/router)
+  is a member of multiple subnets → sits in the overlap of multiple clouds (reads correctly). One cloud per
+  subnet with ≥2 members — currently includes transit /30s + central-hub's per-pc /24s (literal to Amir's
+  request; tweak the `ids.length < 2` guard or add a "≥2 non-boundary members" rule if too busy).
+- **Switch membership:** a switch has no IP, so it joins the subnet of its IP-bearing neighbours (look at
+  each neighbour's interface facing the switch).
+- **`TopologyPane` takes a `topology` prop now** (App/ConsolePage build it). Drop chips render under the fw
+  whose id == `rule.firewall` (multi-fw). Ping animation: BFS `pathWires`; if blocked, highlight up to the
+  wire reaching the first firewall on the path + stop-marker (at edge midpoint now, not the fw-end).
+- **Scenario plumbing:** `GET /scenarios/{name}` (full `model_dump`) + `scenario` in `/health`. `App` has the
+  dropdown (disabled while a lab runs; follows `health.scenario` after reload); `ConsolePage` follows the LIVE
+  `health.scenario` (the console acts on the running lab) and its fw panel targets the clicked firewall.
+- **Verify without a browser:** `tsc`+`vite build` clean; ran `buildTopology` via `npx tsx` against both live
+  graphs (counts/ids/paths/clouds all correct). The visual itself (cloud aesthetics, dagre layout, animation
+  playback) needs Amir's browser pass — no browser tooling in this env (same as the 2c console).
+
 ## LESSON: `pkill -f "uvicorn app.main"` kills its OWN shell (exit 144)
 `pkill -f <pat>` matches full command lines — the shell running the pkill has `<pat>` in its own argv,
 so pkill SIGTERMs its parent shell before the rest of the `;`-chain runs (looks like "exit 144, no

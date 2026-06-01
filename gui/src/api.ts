@@ -4,7 +4,35 @@ const WS_BASE = "ws://localhost:8000";
 export interface HealthResponse {
   status: string;
   lab_active: boolean;
+  scenario: string | null;
   firewall_connected: boolean;
+  firewalls?: string[];
+}
+
+// ── Scenario graph (drives the data-driven topology) ──────────────────────
+export interface ScenarioSummary {
+  name: string;
+  description: string;
+}
+
+export interface GraphInterface {
+  to: string;
+  ip: string | null;       // null for a switch's L2-only ports
+  gateway: string | null;
+}
+
+export interface GraphNode {
+  id: string;
+  role: "pc" | "router" | "firewall" | "switch";
+  image: string;
+  interfaces: GraphInterface[];
+  ports: number[];
+}
+
+export interface ScenarioGraph {
+  name: string;
+  description: string;
+  nodes: GraphNode[];
 }
 
 export interface ToolCallResult {
@@ -21,6 +49,7 @@ export interface ParsedRule {
   port: string | null;
   action: "drop" | "accept" | "reject";
   raw: string;
+  firewall?: string | null;  // which firewall enforces it (multi-fw scenarios)
 }
 
 export interface RulesResponse {
@@ -47,6 +76,18 @@ export interface ChatResponse {
 
 export async function fetchHealth(): Promise<HealthResponse> {
   const res = await fetch(`${BASE}/health`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function fetchScenarios(): Promise<ScenarioSummary[]> {
+  const res = await fetch(`${BASE}/scenarios`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function fetchScenario(name: string): Promise<ScenarioGraph> {
+  const res = await fetch(`${BASE}/scenarios/${name}`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -106,13 +147,15 @@ export async function addRule(
   src: string,
   dst: string,
   proto: string = "icmp",
-  port: number | null = null
+  port: number | null = null,
+  firewall: string | null = null
 ): Promise<AddRuleResponse> {
   const res = await fetch(`${BASE}/rules`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     // port only matters for tcp/udp; send null otherwise (backend ignores it).
-    body: JSON.stringify({ src, dst, proto, port }),
+    // firewall null = backend resolves the target from the source subnet.
+    body: JSON.stringify({ src, dst, proto, port, firewall }),
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();

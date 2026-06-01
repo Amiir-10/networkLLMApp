@@ -110,12 +110,28 @@ resolved deterministically in backend), subnet "cloud" visual for all scenarios.
       nginx ("Welcome to nginx!") + postgres ("accepting connections"); both fw running; shells into
       switcha/ixp; **multi-fw targeting**: block pc1a→pc1b lands tagged `fwa` → ping 100% loss while
       pc2a→pc1b survives → allow clears it → ping restored. Committed.
-- [ ] **Phase D — data-driven frontend + subnet clouds + scenario dropdown + multi-fw display. NOT STARTED.**
-      The whole frontend is still hardcoded to central-hub (`topology.ts` INITIAL_NODES/STATIC_EDGES/
-      IP_TO_NODE_ID/PHYSICAL_LINKS; `App.tsx:16`+`ConsolePage.tsx:12` `const SCENARIO`). Backend is
-      ready: `GET /scenarios`, and the active scenario's nodes/interfaces give everything to derive
-      topology + subnets + the link graph. Sub-steps + central-hub regression gate: see the plan
-      `~/.claude/plans/jiggly-marinating-tide.md` Phase D and the vault handoff note.
+- [x] **Phase D — data-driven frontend + subnet clouds + scenario dropdown + multi-fw display. DONE
+      (build + logic verified; in-browser visual is Amir's check).**
+      Backend: `GET /scenarios/{name}` (full graph) + `scenario` added to `/health`. Frontend rewritten
+      data-driven: new `gui/src/topology.ts` `buildTopology(graph)` — derives RF device nodes (dagre
+      LR auto-layout), **subnet "cloud" background nodes** (one per subnet ≥2 members; boundary
+      fw/router naturally overlap two clouds), wire edges (handles picked from post-layout direction),
+      ip→node map, firewallIds, and **BFS `pathWires`/`pathNodes`** for the ping animation. `@dagrejs/dagre`
+      added. `TopologyPane` now takes a `topology` prop, renders clouds + a switch icon, filters drop
+      chips per-firewall (`rule.firewall`), and animates the BFS path (stop-marker at the wire reaching
+      the first firewall when blocked). `App.tsx`: scenario `<select>` (from `GET /scenarios`, disabled
+      while a lab runs), builds topology from the selected scenario, follows `health.scenario` after a
+      reload. `ConsolePage.tsx`: follows the LIVE `health.scenario`, per-firewall rule panel that targets
+      the clicked firewall (`addRule(...,firewall)`). `api.ts`: `fetchScenarios`/`fetchScenario`,
+      `ParsedRule.firewall`, `HealthResponse.scenario`, `addRule` firewall arg.
+      **VERIFIED:** `tsc --noEmit` clean; `vite build` clean (189 modules); dev server serves `/`+`/console`;
+      `buildTopology` unit-tested vs BOTH live graphs — central-hub (5 nodes/4 edges/[fw]/pc1→fw→pc2/4
+      clouds) and two-subnet-ixp (13/12/[fwa,fwb]/full 9-node IXP path/LAN-A+LAN-B+IXP clouds), all nodes
+      positioned + clouds sized. **NOTE:** layout/visual intentionally CHANGED (the overhaul); ping
+      animation BEHAVIOUR preserved (same wires light). Every subnet (incl. transit /30s + central-hub's
+      per-pc subnets) currently gets a cloud — literal to Amir's "all devices in a subnet in a cloud";
+      a 1-line threshold tweak if it reads busy. **Open: Amir's in-browser pass** (no browser tooling here).
+      3c (multi-image dockerscan) still deferred.
 
 ## Session summary (2026-05-31)
 Shipped Phase 1 (engine refactor) + 2a (IPv6) + 2b (Reset). 4 commits: 2f2a877, 623073f, 9a19088, b1fd7c7.

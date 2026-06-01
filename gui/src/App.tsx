@@ -4,6 +4,8 @@ import ChatPane from "./components/ChatPane";
 import {
   fetchHealth,
   fetchRules,
+  fetchScenarios,
+  fetchScenario,
   startLab,
   stopLab,
   resetLab,
@@ -11,9 +13,10 @@ import {
   type ParsedRule,
   type ToolCallResult,
   type PingTestResult,
+  type ScenarioSummary,
 } from "./api";
+import { buildTopology, type BuiltTopology } from "./topology";
 
-const SCENARIO = "central-hub";
 const MODELS = ["llama3.1:8b", "qwen2.5-coder:7b"];
 const RULE_MUTATING_TOOLS = new Set(["block_traffic", "allow_traffic", "flush_rules"]);
 
@@ -34,6 +37,9 @@ function isPingBlocked(lossLine: string | undefined): boolean {
 
 export default function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [scenarios, setScenarios] = useState<ScenarioSummary[]>([]);
+  const [scenario, setScenario] = useState("central-hub");
+  const [topology, setTopology] = useState<BuiltTopology | null>(null);
   const [model, setModel] = useState(MODELS[0]);
   const [labLoading, setLabLoading] = useState(false);
   const [labError, setLabError] = useState<string | null>(null);
@@ -57,6 +63,27 @@ export default function App() {
     const id = setInterval(pollHealth, 5000);
     return () => clearInterval(id);
   }, [pollHealth]);
+
+  // Available scenarios for the dropdown.
+  useEffect(() => {
+    fetchScenarios().then(setScenarios).catch(() => setScenarios([]));
+  }, []);
+
+  // Build the topology for the selected scenario (reads the YAML; no lab needed).
+  useEffect(() => {
+    let cancelled = false;
+    fetchScenario(scenario)
+      .then((g) => { if (!cancelled) setTopology(buildTopology(g)); })
+      .catch(() => { if (!cancelled) setTopology(null); });
+    return () => { cancelled = true; };
+  }, [scenario]);
+
+  // If a lab is already running (e.g. after a reload), follow its scenario.
+  useEffect(() => {
+    if (health?.lab_active && health.scenario && health.scenario !== scenario) {
+      setScenario(health.scenario);
+    }
+  }, [health?.lab_active, health?.scenario, scenario]);
 
   const labActive = health?.lab_active ?? false;
   const fwConnected = health?.firewall_connected ?? false;
@@ -90,7 +117,7 @@ export default function App() {
     setLabLoading(true);
     setLabError(null);
     try {
-      await startLab(SCENARIO);
+      await startLab(scenario);
       await pollHealth();
     } catch (err) {
       setLabError(String(err));
@@ -103,7 +130,7 @@ export default function App() {
     setLabLoading(true);
     setLabError(null);
     try {
-      await stopLab(SCENARIO);
+      await stopLab(scenario);
       await pollHealth();
       setFirewallRules([]);
       setPingEvent(null);
@@ -125,7 +152,7 @@ export default function App() {
     setLabLoading(true);
     setLabError(null);
     try {
-      await resetLab(SCENARIO);
+      await resetLab(scenario);
       await pollHealth();
       setFirewallRules([]);
       setPingEvent(null);
@@ -175,6 +202,7 @@ export default function App() {
           </div>
           <div className="h-[calc(100%-49px)]">
             <TopologyPane
+              topology={topology}
               labReady={labReady}
               dropRules={dropRules}
               pingEvent={pingEvent}
@@ -205,7 +233,18 @@ export default function App() {
 
       {/* Bottom bar */}
       <div className="border-t border-gray-200 px-4 py-2 flex items-center gap-4 bg-gray-50">
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          <select
+            value={scenario}
+            onChange={(e) => setScenario(e.target.value)}
+            disabled={labActive || labLoading}
+            title={labActive ? "Stop the lab to switch scenarios" : "Choose a scenario"}
+            className="text-xs border border-gray-300 rounded px-2 py-1.5 bg-white disabled:opacity-50"
+          >
+            {scenarios.map((s) => (
+              <option key={s.name} value={s.name}>{s.name}</option>
+            ))}
+          </select>
           <button
             onClick={handleStartLab}
             disabled={labLoading || labActive}
@@ -243,7 +282,7 @@ export default function App() {
             <span className={`w-2 h-2 rounded-full ${fwConnected ? "bg-green-500" : "bg-gray-300"}`} />
             Firewall
           </span>
-          {labActive && <span className="text-gray-400">Scenario: {SCENARIO}</span>}
+          {labActive && <span className="text-gray-400">Scenario: {health?.scenario ?? scenario}</span>}
           {labReady && dropRules.length > 0 && (
             <span className="text-gray-400">
               · {dropRules.length} DROP rule{dropRules.length === 1 ? "" : "s"}
