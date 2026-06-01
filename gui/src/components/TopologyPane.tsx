@@ -322,6 +322,9 @@ interface Props {
   dropRules: ParsedRule[];
   pingEvent: PingEvent | null;
   onPingEventComplete: () => void;
+  // Optional: when provided, clicking a node calls this with its id. Used by the
+  // /console page to open a per-node shell; omitted on the main `/` view (no-op).
+  onNodeClick?: (nodeId: string) => void;
 }
 
 export default function TopologyPane({
@@ -329,6 +332,7 @@ export default function TopologyPane({
   dropRules,
   pingEvent,
   onPingEventComplete,
+  onNodeClick,
 }: Props) {
   const [nodes, , onNodesChange] = useNodesState<Node<DeviceNodeData>>(INITIAL_NODES);
   const [highlights, setHighlights] = useState<Record<string, WireHighlight>>({});
@@ -387,6 +391,7 @@ export default function TopologyPane({
             nodes={nodes}
             edges={edges}
             onNodesChange={onNodesChange}
+            onNodeClick={onNodeClick ? (_, n) => onNodeClick(n.id) : undefined}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
             fitView

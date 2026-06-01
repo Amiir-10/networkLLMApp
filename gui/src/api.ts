@@ -1,4 +1,5 @@
 const BASE = "http://localhost:8000";
+const WS_BASE = "ws://localhost:8000";
 
 export interface HealthResponse {
   status: string;
@@ -87,4 +88,35 @@ export async function fetchRules(): Promise<RulesResponse> {
   const res = await fetch(`${BASE}/rules`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
+}
+
+export interface AddRuleResponse {
+  status: string;
+  src: string;
+  dst: string;
+  proto: string;
+  result: unknown;
+}
+
+// Add a firewall DROP rule via the console form. Hits POST /rules, which calls
+// the SAME security.block(...) the LLM's block_traffic tool uses — so a rule
+// added here is byte-identical to one the LLM adds, and both mirror into the
+// `/` view (every view reads the one GET /rules source).
+export async function addRule(
+  src: string,
+  dst: string,
+  proto: string = "icmp"
+): Promise<AddRuleResponse> {
+  const res = await fetch(`${BASE}/rules`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ src, dst, proto }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// WebSocket URL for a real PTY shell into a lab container (GET /ws/console/...).
+export function wsConsoleUrl(scenario: string, node: string): string {
+  return `${WS_BASE}/ws/console/${scenario}/${node}`;
 }
