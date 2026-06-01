@@ -1,22 +1,30 @@
 name: central-hub
-description: Three PCs on three LAN subnets (10.99.10/20/30.0/24) and an edge router on a WAN subnet (203.0.113.0/24, TEST-NET-3), all centrally routed through a firewalld-managed firewall.
+description: Three PCs on three LAN subnets (10.99.10/20/30.0/24) and an edge router on a WAN subnet (203.0.113.0/24, TEST-NET-3), all centrally routed through a firewalld-managed firewall. pc1/pc2 run real nginx web servers (TCP 80); pc3 runs a real PostgreSQL (TCP 5432).
 
 nodes:
   - id: pc1
     role: pc
-    image: alpine:3.20
+    image: nginx:alpine
+    idle: false          # nginx runs as PID 1 (CMD: nginx -g 'daemon off;')
+    ports: [80]
     interfaces:
       - {to: fw, ip: 10.99.10.10/24, gateway: 10.99.10.1}
 
   - id: pc2
     role: pc
-    image: alpine:3.20
+    image: nginx:alpine
+    idle: false
+    ports: [80]
     interfaces:
       - {to: fw, ip: 10.99.20.10/24, gateway: 10.99.20.1}
 
   - id: pc3
     role: pc
-    image: alpine:3.20
+    image: postgres:16-alpine
+    idle: false          # postgres runs as PID 1
+    env:
+      POSTGRES_HOST_AUTH_METHOD: trust   # no password needed for the demo; listens on *:5432
+    ports: [5432]
     interfaces:
       - {to: fw, ip: 10.99.30.10/24, gateway: 10.99.30.1}
 

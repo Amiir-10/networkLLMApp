@@ -55,20 +55,19 @@ class TopologyEngine:
             # IPv6 disabled on every node regardless of image (standing rule),
             # stamped at creation. Merge with the firewall's ip_forward.
             sysctls = dict(netconfig.IPV6_DISABLE_SYSCTLS)
+            clab_node: dict = {
+                "kind": "linux",
+                "image": node.image,
+                "sysctls": sysctls,
+            }
             if node.role == "firewall":
                 sysctls["net.ipv4.ip_forward"] = 1
-                clab_node: dict = {
-                    "kind": "linux",
-                    "image": node.image,
-                    "sysctls": sysctls,
-                }
-            else:
-                clab_node = {
-                    "kind": "linux",
-                    "image": node.image,
-                    "cmd": "sleep infinity",
-                    "sysctls": sysctls,
-                }
+            elif node.idle:
+                # Keep a bare host alive. Omitted when the image runs its own
+                # service as PID 1 (nginx, postgres, …) so we don't shadow it.
+                clab_node["cmd"] = "sleep infinity"
+            if node.env:
+                clab_node["env"] = dict(node.env)
             topology["nodes"][node.id] = clab_node
             for idx, iface in enumerate(node.interfaces, start=1):
                 iface_index[(node.id, iface.to)] = idx

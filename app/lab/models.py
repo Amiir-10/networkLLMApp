@@ -15,6 +15,20 @@ class Node(BaseModel):
     role: NodeRole
     image: str = "alpine:3.20"
     interfaces: list[Interface]
+    # --- service / runtime (Phase 3b: real PC services) ---
+    # `idle=True` keeps an otherwise-empty host alive with `sleep infinity` (the
+    # right default for a bare alpine box). Set `idle=False` when the image runs
+    # its own service as PID 1 (nginx, postgres, …) so its entrypoint isn't
+    # shadowed. `env` is passed straight to the containerlab node (e.g. postgres
+    # auth). `launch` is a shell command started DETACHED inside the container
+    # AFTER L3 config (generalises the old :8080 listener — for hosts that need a
+    # service started by hand rather than via the image entrypoint). `ports` is
+    # the declared set of listening ports (display + the Phase-3b port-aware
+    # firewall surface); it does not itself open anything.
+    idle: bool = True
+    env: dict[str, str] = Field(default_factory=dict)
+    launch: str | None = None
+    ports: list[int] = Field(default_factory=list)
 
 
 class Scenario(BaseModel):

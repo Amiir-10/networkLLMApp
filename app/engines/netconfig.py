@@ -24,18 +24,6 @@ IPV6_DISABLE_SYSCTLS = {
     "net.ipv6.conf.lo.disable_ipv6": 1,
 }
 
-# A tiny TCP service every PC runs so the hosts are not empty idle containers:
-# they listen on :8080 and answer each connection. Run detached (PID 1 stays
-# `sleep infinity`, so the demo's connectivity never depends on this), it gives
-# a real, reachable service for future network/port scans to discover.
-PC_LISTENER_SCRIPT = (
-    "while true; do "
-    "printf 'HTTP/1.1 200 OK\\r\\nConnection: close\\r\\n\\r\\nalive: %s\\n' \"$(hostname)\" "
-    "| nc -l -p 8080 2>/dev/null; "
-    "done"
-)
-
-
 def docker_exec(container: str, cmd: list[str], timeout: int = 15) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["docker", "exec", container, *cmd],
@@ -63,10 +51,13 @@ def wait_for_firewalld(container: str, timeout: int = 30) -> bool:
     return False
 
 
-def launch_pc_listener(container: str) -> subprocess.CompletedProcess:
-    """Start the always-on :8080 listener (detached) so the PC is a live,
-    reachable host rather than an idle container."""
-    return docker_exec_detached(container, ["sh", "-c", PC_LISTENER_SCRIPT])
+def launch_service(container: str, command: str) -> subprocess.CompletedProcess:
+    """Start a node's declared `launch` command detached inside the container,
+    AFTER L3 is configured. Generalises the old hard-coded :8080 listener: a
+    scenario node now says what service to run (for hosts whose service is not
+    the image's own PID 1). Detached + best-effort, so lab readiness never
+    depends on it."""
+    return docker_exec_detached(container, ["sh", "-c", command])
 
 
 def disable_ipv6(container: str) -> list[str]:
@@ -123,9 +114,9 @@ def configure_nodes(scenario_name: str, scenario: Scenario) -> list[str]:
                     warnings.append(
                         f"{container}: ip route replace default via {iface.gateway} -> {r3.stderr.strip()}"
                     )
-        if node.role == "pc":
+        if node.launch:
             # Best-effort: a failure here must not block lab readiness.
-            rl = launch_pc_listener(container)
+            rl = launch_service(container, node.launch)
             if rl.returncode != 0:
-                warnings.append(f"{container}: listener launch -> {rl.stderr.strip()}")
+                warnings.append(f"{container}: service launch -> {rl.stderr.strip()}")
     return warnings
