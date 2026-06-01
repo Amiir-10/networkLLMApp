@@ -132,6 +132,12 @@ resolved deterministically in backend), subnet "cloud" visual for all scenarios.
       per-pc subnets) currently gets a cloud — literal to Amir's "all devices in a subnet in a cloud";
       a 1-line threshold tweak if it reads busy. **Open: Amir's in-browser pass** (no browser tooling here).
       3c (multi-image dockerscan) still deferred.
+- [x] **Phase D review fixes** (`bf89ba9`, `b0f2c14`): integrated Chat/Console **tab bar** (state lifted to an
+      `App` shell; console previews topology pre-lab — fixes the blank canvas); **cloud = subnet not device**
+      (threshold ≥3 members → central-hub 0 clouds, two-subnet-ixp = LAN-A/LAN-B/IXP); **named cloud labels**
+      `LAN · <cidr>` / `IXP · <cidr>`. Real two-fw route verified over HTTP; central-hub fw gate re-confirmed
+      byte-identical post-Phase-C. ONLY open = Amir's first in-browser render pass. See
+      vault [[Demo-2-Phase-D-Handoff-2026-06-01]].
 
 ## Session summary (2026-05-31)
 Shipped Phase 1 (engine refactor) + 2a (IPv6) + 2b (Reset). 4 commits: 2f2a877, 623073f, 9a19088, b1fd7c7.
