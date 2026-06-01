@@ -105,12 +105,14 @@ export interface AddRuleResponse {
 export async function addRule(
   src: string,
   dst: string,
-  proto: string = "icmp"
+  proto: string = "icmp",
+  port: number | null = null
 ): Promise<AddRuleResponse> {
   const res = await fetch(`${BASE}/rules`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ src, dst, proto }),
+    // port only matters for tcp/udp; send null otherwise (backend ignores it).
+    body: JSON.stringify({ src, dst, proto, port }),
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();

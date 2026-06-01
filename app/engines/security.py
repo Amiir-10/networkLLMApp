@@ -33,8 +33,9 @@ class SecurityEngine:
     def health(self) -> dict:
         return self._fw.health()
 
-    def block(self, src_ip: str | None, dst_ip: str | None, proto: str = "icmp") -> dict:
-        return self._fw.block(src_ip, dst_ip, proto)
+    def block(self, src_ip: str | None, dst_ip: str | None, proto: str = "icmp",
+              port: int | str | None = None) -> dict:
+        return self._fw.block(src_ip, dst_ip, proto, port)
 
     def allow(self, src_ip: str | None, dst_ip: str | None, proto: str = "icmp") -> dict:
         return self._fw.allow(src_ip, dst_ip, proto)

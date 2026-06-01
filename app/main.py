@@ -191,6 +191,7 @@ class RuleRequest(BaseModel):
     src: str
     dst: str
     proto: str = "icmp"
+    port: int | None = None
 
 
 @app.post("/rules")
@@ -217,8 +218,8 @@ def add_rule(req: RuleRequest) -> dict:
     ip_map = _node_ip_map(_active_scenario)
     src_ip = ip_map.get(req.src)
     dst_ip = ip_map.get(req.dst)
-    result = security.block(src_ip, dst_ip, req.proto)
-    return {"status": "added", "src": req.src, "dst": req.dst, "proto": req.proto, "result": result}
+    result = security.block(src_ip, dst_ip, req.proto, req.port)
+    return {"status": "added", "src": req.src, "dst": req.dst, "proto": req.proto, "port": req.port, "result": result}
 
 
 @app.websocket("/ws/console/{scenario_name}/{node}")

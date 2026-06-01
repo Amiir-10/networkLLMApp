@@ -30,15 +30,19 @@ function FirewallPanel({
   const [src, setSrc] = useState(others[0]);
   const [dst, setDst] = useState(others[1] ?? others[0]);
   const [proto, setProto] = useState(PROTOS[0]);
+  const [port, setPort] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  const portable = proto === "tcp" || proto === "udp";
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setErr(null);
     try {
-      await addRule(src, dst, proto);
+      const p = portable && port.trim() !== "" ? Number(port) : null;
+      await addRule(src, dst, proto, p);
       onChanged();
     } catch (e2) {
       setErr(String(e2));
@@ -81,6 +85,15 @@ function FirewallPanel({
           <select value={proto} onChange={(e) => setProto(e.target.value)} className="border border-gray-300 rounded px-1.5 py-1 bg-white">
             {PROTOS.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
+          {portable && (
+            <input
+              type="number"
+              value={port}
+              onChange={(e) => setPort(e.target.value)}
+              placeholder="port"
+              className="border border-gray-300 rounded px-1.5 py-1 bg-white w-20"
+            />
+          )}
           <button
             type="submit"
             disabled={busy || src === dst}

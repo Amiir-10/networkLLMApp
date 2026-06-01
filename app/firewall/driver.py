@@ -82,9 +82,15 @@ class FirewalldDriver:
         resp.raise_for_status()
         return resp.json()
 
-    def block(self, src_ip: str | None, dst_ip: str | None, proto: str = "icmp") -> dict:
+    def block(self, src_ip: str | None, dst_ip: str | None, proto: str = "icmp",
+              port: int | str | None = None) -> dict:
+        # `port` only takes effect for tcp/udp (fw-api builds a port rich-rule);
+        # it is ignored for icmp/all. allow() needs no port — it clears every
+        # drop for the src/dst pair, reconstructing each delete (incl. its port)
+        # from the parsed rule, so a port-specific drop is removed by pair alone.
         return self._post("/rules", {
-            "src_ip": src_ip, "dst_ip": dst_ip, "protocol": proto, "action": "drop",
+            "src_ip": src_ip, "dst_ip": dst_ip, "protocol": proto,
+            "port": str(port) if port is not None else None, "action": "drop",
         })
 
     def allow(self, src_ip: str | None, dst_ip: str | None, proto: str = "icmp") -> dict:

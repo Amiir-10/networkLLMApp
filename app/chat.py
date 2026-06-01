@@ -13,13 +13,14 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "block_traffic",
-            "description": "Block traffic between two nodes. Adds a firewall DROP rule.",
+            "description": "Block traffic between two nodes. Adds a firewall DROP rule. For a specific service set proto=tcp|udp and port (e.g. block web traffic = proto tcp, port 80; postgres = proto tcp, port 5432).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "src": {"type": "string", "description": "Source node ID (e.g. pc1)"},
                     "dst": {"type": "string", "description": "Destination node ID (e.g. pc2)"},
                     "proto": {"type": "string", "enum": ["icmp", "tcp", "udp", "all"], "default": "icmp"},
+                    "port": {"type": "integer", "description": "Port for a tcp/udp service rule (e.g. 80, 5432). Omit for icmp or to block the whole protocol."},
                 },
                 "required": ["src", "dst"],
             },
@@ -147,7 +148,8 @@ def dispatch_tool(
         src_ip = ip_map.get(args["src"])
         dst_ip = ip_map.get(args["dst"])
         proto = args.get("proto", "icmp")
-        return security.block(src_ip, dst_ip, proto)
+        port = args.get("port")
+        return security.block(src_ip, dst_ip, proto, port)
 
     elif name == "allow_traffic":
         src_ip = ip_map.get(args["src"])
