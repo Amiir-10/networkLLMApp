@@ -141,10 +141,18 @@ export function buildTopology(graph: ScenarioGraph): BuiltTopology {
   }));
 
   // ── Cloud nodes (one per subnet; bbox of members, padded) ─────────────────
+  // A cloud represents a subnet, not a device. Only draw it where devices
+  // genuinely SHARE a subnet (>= MIN_CLOUD_MEMBERS): the LAN segments and the
+  // IXP fabric. Point-to-point links (a /30 transit, or a host alone on its own
+  // /24 with just its gateway) get no cloud — otherwise the gateway, which sits
+  // on every subnet, would be wrapped in a bubble per neighbour ("a cloud per
+  // device"). E.g. central-hub's PCs are each on their own /24, so it gets no
+  // clouds; two-subnet-ixp gets LAN-A, LAN-B and the IXP.
+  const MIN_CLOUD_MEMBERS = 3;
   const cloudNodes: Node<CloudNodeData>[] = [];
   for (const [cidr, members] of subnets) {
     const ids = [...members].filter((id) => pos[id]);
-    if (ids.length < 2) continue; // a lone-member subnet isn't a meaningful cloud
+    if (ids.length < MIN_CLOUD_MEMBERS) continue;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const id of ids) {
       minX = Math.min(minX, pos[id].x);

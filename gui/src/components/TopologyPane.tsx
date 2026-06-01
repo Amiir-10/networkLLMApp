@@ -14,8 +14,7 @@ import {
 import "@xyflow/react/dist/style.css";
 
 import { ipToNodeLabel, type DeviceNodeData, type BuiltTopology } from "../topology";
-import type { ParsedRule } from "../api";
-import type { PingEvent } from "../App";
+import type { ParsedRule, PingEvent } from "../api";
 
 // --- SVG Icons ---
 

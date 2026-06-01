@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import TopologyPane from "./components/TopologyPane";
-import ChatPane from "./components/ChatPane";
+import ChatView from "./components/ChatView";
+import ConsoleView from "./components/ConsoleView";
 import {
   fetchHealth,
   fetchRules,
@@ -13,6 +13,7 @@ import {
   type ParsedRule,
   type ToolCallResult,
   type PingTestResult,
+  type PingEvent,
   type ScenarioSummary,
 } from "./api";
 import { buildTopology, type BuiltTopology } from "./topology";
@@ -20,22 +21,15 @@ import { buildTopology, type BuiltTopology } from "./topology";
 const MODELS = ["llama3.1:8b", "qwen2.5-coder:7b"];
 const RULE_MUTATING_TOOLS = new Set(["block_traffic", "allow_traffic", "flush_rules"]);
 
-export interface PingEvent {
-  id: number;
-  src: string;
-  dst: string;
-  blocked: boolean;
-}
+type View = "chat" | "console";
 
 function isPingBlocked(lossLine: string | undefined): boolean {
   if (!lossLine) return true;
-  // Examples:
-  //   "2 packets transmitted, 2 received, 0% packet loss, time 1003ms"  (pass)
-  //   "2 packets transmitted, 0 received, 100% packet loss, time 1004ms" (blocked)
   return !/\b0% packet loss\b/.test(lossLine);
 }
 
 export default function App() {
+  const [view, setView] = useState<View>("chat");
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [scenarios, setScenarios] = useState<ScenarioSummary[]>([]);
   const [scenario, setScenario] = useState("central-hub");
@@ -45,8 +39,6 @@ export default function App() {
   const [labError, setLabError] = useState<string | null>(null);
   const [firewallRules, setFirewallRules] = useState<ParsedRule[]>([]);
   const [pingEvent, setPingEvent] = useState<PingEvent | null>(null);
-  // Bumped on reset to force-remount ChatPane, clearing the visible conversation
-  // (backend history is cleared server-side by /lab/reset).
   const [chatResetKey, setChatResetKey] = useState(0);
   const pingIdRef = useRef(0);
 
@@ -64,12 +56,12 @@ export default function App() {
     return () => clearInterval(id);
   }, [pollHealth]);
 
-  // Available scenarios for the dropdown.
   useEffect(() => {
     fetchScenarios().then(setScenarios).catch(() => setScenarios([]));
   }, []);
 
-  // Build the topology for the selected scenario (reads the YAML; no lab needed).
+  // Build the topology for the selected scenario (reads YAML; no lab needed),
+  // so both the chat and console views render a preview before any lab starts.
   useEffect(() => {
     let cancelled = false;
     fetchScenario(scenario)
@@ -96,22 +88,17 @@ export default function App() {
       return;
     }
     try {
-      const r = await fetchRules();
-      setFirewallRules(r.parsed);
+      setFirewallRules((await fetchRules()).parsed);
     } catch {
-      // best-effort; leave previous rules in place
+      /* best-effort; keep previous */
     }
   }, [labReady]);
 
-  // Refetch when lab readiness changes.
   useEffect(() => {
     refetchRules();
   }, [refetchRules]);
 
-  const dropRules = useMemo(
-    () => firewallRules.filter((r) => r.action === "drop"),
-    [firewallRules]
-  );
+  const dropRules = useMemo(() => firewallRules.filter((r) => r.action === "drop"), [firewallRules]);
 
   async function handleStartLab() {
     setLabLoading(true);
@@ -142,13 +129,7 @@ export default function App() {
   }
 
   async function handleResetLab() {
-    if (
-      !window.confirm(
-        "Reset the lab? This destroys and redeploys every container and clears the chat. Takes ~30–60s."
-      )
-    ) {
-      return;
-    }
+    if (!window.confirm("Reset the lab? This destroys and redeploys every container and clears the chat. Takes ~30–60s.")) return;
     setLabLoading(true);
     setLabError(null);
     try {
@@ -166,74 +147,39 @@ export default function App() {
 
   const handleChatComplete = useCallback(
     (toolCalls: ToolCallResult[]) => {
-      if (toolCalls.some((tc) => RULE_MUTATING_TOOLS.has(tc.tool))) {
-        refetchRules();
-      }
-      // Pick the last ping_test (LLM may emit multiple per response — animate the most recent).
+      if (toolCalls.some((tc) => RULE_MUTATING_TOOLS.has(tc.tool))) refetchRules();
       const ping = [...toolCalls].reverse().find((tc) => tc.tool === "ping_test");
       if (ping && ping.args && ping.result && !ping.error) {
         const args = ping.args as { src?: string; dst?: string };
         const result = ping.result as PingTestResult;
         if (args.src && args.dst) {
           pingIdRef.current += 1;
-          setPingEvent({
-            id: pingIdRef.current,
-            src: args.src,
-            dst: args.dst,
-            blocked: isPingBlocked(result.loss_line),
-          });
+          setPingEvent({ id: pingIdRef.current, src: args.src, dst: args.dst, blocked: isPingBlocked(result.loss_line) });
         }
       }
     },
     [refetchRules]
   );
 
-  const handlePingEventComplete = useCallback(() => {
-    setPingEvent(null);
-  }, []);
+  const handlePingEventComplete = useCallback(() => setPingEvent(null), []);
+
+  const tabClass = (active: boolean) =>
+    `px-3 py-1 text-xs font-medium rounded transition-colors ${
+      active ? "bg-white text-gray-800 shadow-sm border border-gray-200" : "text-gray-500 hover:text-gray-700"
+    }`;
 
   return (
     <div className="h-screen flex flex-col bg-white">
-      <div className="flex-1 flex min-h-0">
-        {/* Topology pane */}
-        <div className="w-1/2 border-r border-gray-200">
-          <div className="px-4 py-3 border-b border-gray-200">
-            <h2 className="text-sm font-semibold text-gray-700">Network Topology</h2>
-          </div>
-          <div className="h-[calc(100%-49px)]">
-            <TopologyPane
-              topology={topology}
-              labReady={labReady}
-              dropRules={dropRules}
-              pingEvent={pingEvent}
-              onPingEventComplete={handlePingEventComplete}
-            />
-          </div>
-        </div>
+      {/* Unified top bar: app title · view tabs · scenario + lab controls · status */}
+      <header className="border-b border-gray-200 px-4 py-2 flex items-center gap-4 bg-gray-50">
+        <span className="text-sm font-bold text-gray-800">networkLLMApp</span>
 
-        {/* Chat pane */}
-        <div className="w-1/2">
-          <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-gray-700">Chat</h2>
-            <select
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              className="text-xs border border-gray-300 rounded px-2 py-1 bg-white"
-            >
-              {MODELS.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
-          </div>
-          <div className="h-[calc(100%-49px)]">
-            <ChatPane key={chatResetKey} model={model} labActive={labReady} onChatComplete={handleChatComplete} />
-          </div>
-        </div>
-      </div>
+        <nav className="flex items-center gap-1 bg-gray-100 rounded-md p-0.5">
+          <button className={tabClass(view === "chat")} onClick={() => setView("chat")}>Chat</button>
+          <button className={tabClass(view === "console")} onClick={() => setView("console")}>Console</button>
+        </nav>
 
-      {/* Bottom bar */}
-      <div className="border-t border-gray-200 px-4 py-2 flex items-center gap-4 bg-gray-50">
-        <div className="flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-3">
           <select
             value={scenario}
             onChange={(e) => setScenario(e.target.value)}
@@ -245,55 +191,54 @@ export default function App() {
               <option key={s.name} value={s.name}>{s.name}</option>
             ))}
           </select>
-          <button
-            onClick={handleStartLab}
-            disabled={labLoading || labActive}
-            className="bg-green-600 text-white px-3 py-1.5 rounded text-xs font-medium disabled:opacity-40 hover:bg-green-700 transition-colors"
-          >
-            {labLoading && !labActive ? "Starting..." : "Start Lab"}
-          </button>
-          <button
-            onClick={handleStopLab}
-            disabled={labLoading || !labActive}
-            className="bg-red-600 text-white px-3 py-1.5 rounded text-xs font-medium disabled:opacity-40 hover:bg-red-700 transition-colors"
-          >
-            {labLoading && labActive ? "Stopping..." : "Stop Lab"}
-          </button>
-          <button
-            onClick={handleResetLab}
-            disabled={labLoading || !labActive}
-            title="Destroy + redeploy all containers and clear the chat"
-            className="bg-amber-600 text-white px-3 py-1.5 rounded text-xs font-medium disabled:opacity-40 hover:bg-amber-700 transition-colors"
-          >
-            {labLoading && labActive ? "Working..." : "Reset"}
-          </button>
-        </div>
 
-        <div className="flex items-center gap-3 text-xs text-gray-500">
-          <span className="flex items-center gap-1">
-            <span className={`w-2 h-2 rounded-full ${backendUp ? "bg-green-500" : "bg-red-500"}`} />
-            Backend
-          </span>
-          <span className="flex items-center gap-1">
-            <span className={`w-2 h-2 rounded-full ${labActive ? "bg-green-500" : "bg-gray-300"}`} />
-            Lab
-          </span>
-          <span className="flex items-center gap-1">
-            <span className={`w-2 h-2 rounded-full ${fwConnected ? "bg-green-500" : "bg-gray-300"}`} />
-            Firewall
-          </span>
-          {labActive && <span className="text-gray-400">Scenario: {health?.scenario ?? scenario}</span>}
-          {labReady && dropRules.length > 0 && (
-            <span className="text-gray-400">
-              · {dropRules.length} DROP rule{dropRules.length === 1 ? "" : "s"}
-            </span>
-          )}
-        </div>
+          <div className="flex gap-2">
+            <button onClick={handleStartLab} disabled={labLoading || labActive} className="bg-green-600 text-white px-3 py-1.5 rounded text-xs font-medium disabled:opacity-40 hover:bg-green-700 transition-colors">
+              {labLoading && !labActive ? "Starting..." : "Start"}
+            </button>
+            <button onClick={handleStopLab} disabled={labLoading || !labActive} className="bg-red-600 text-white px-3 py-1.5 rounded text-xs font-medium disabled:opacity-40 hover:bg-red-700 transition-colors">
+              {labLoading && labActive ? "Stopping..." : "Stop"}
+            </button>
+            <button onClick={handleResetLab} disabled={labLoading || !labActive} title="Destroy + redeploy all containers and clear the chat" className="bg-amber-600 text-white px-3 py-1.5 rounded text-xs font-medium disabled:opacity-40 hover:bg-amber-700 transition-colors">
+              {labLoading && labActive ? "Working..." : "Reset"}
+            </button>
+          </div>
 
-        {labError && (
-          <span className="text-xs text-red-500 ml-auto">{labError}</span>
-        )}
-      </div>
+          <div className="flex items-center gap-3 text-xs text-gray-500">
+            <span className="flex items-center gap-1"><span className={`w-2 h-2 rounded-full ${backendUp ? "bg-green-500" : "bg-red-500"}`} />Backend</span>
+            <span className="flex items-center gap-1"><span className={`w-2 h-2 rounded-full ${labActive ? "bg-green-500" : "bg-gray-300"}`} />Lab</span>
+            <span className="flex items-center gap-1"><span className={`w-2 h-2 rounded-full ${fwConnected ? "bg-green-500" : "bg-gray-300"}`} />Firewall</span>
+            {labReady && dropRules.length > 0 && (
+              <span className="text-gray-400">{dropRules.length} DROP{dropRules.length === 1 ? "" : "s"}</span>
+            )}
+          </div>
+
+          {labError && <span className="text-xs text-red-500 max-w-[200px] truncate" title={labError}>{labError}</span>}
+        </div>
+      </header>
+
+      {view === "chat" ? (
+        <ChatView
+          topology={topology}
+          labReady={labReady}
+          dropRules={dropRules}
+          pingEvent={pingEvent}
+          onPingEventComplete={handlePingEventComplete}
+          model={model}
+          setModel={setModel}
+          models={MODELS}
+          chatResetKey={chatResetKey}
+          onChatComplete={handleChatComplete}
+        />
+      ) : (
+        <ConsoleView
+          topology={topology}
+          labReady={labReady}
+          scenario={scenario}
+          dropRules={dropRules}
+          refetchRules={refetchRules}
+        />
+      )}
     </div>
   );
 }

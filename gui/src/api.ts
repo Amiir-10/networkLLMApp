@@ -42,6 +42,14 @@ export interface ToolCallResult {
   error?: string;
 }
 
+// A ping_test result the topology view animates along the src->dst path.
+export interface PingEvent {
+  id: number;
+  src: string;
+  dst: string;
+  blocked: boolean;
+}
+
 export interface ParsedRule {
   src_ip: string | null;
   dst_ip: string | null;
