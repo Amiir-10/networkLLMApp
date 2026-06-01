@@ -75,6 +75,31 @@ human in-browser click-through of /console (no browser tooling here).
 ## Write-back — DONE 2026-05-31 (session #1)
 - [x] session-log.md (## 2026-05-31 #1), README (Brain Dump + status), decisions-log (impl entry), Demo-2 plan status header
 
+## Session 2026-06-01 #2 — 3a + 2nd scenario (two-subnet-ixp) + visual overhaul
+Plan: `~/.claude/plans/jiggly-marinating-tide.md`. Amir's choices: fully-real end-to-end 2nd
+scenario (two mirror subnets, each `3 PCs → L2 switch → internal fw → router`, routers peering
+through a real IXP shared subnet), real Alpine L2 switches, TWO live firewalls (rules target one,
+resolved deterministically in backend), subnet "cloud" visual for all scenarios.
+
+- [x] **Phase A — de-risk spike (throwaway, no commit).** PASS. (1) Alpine `ip link … master br0`
+      forwards L2 across containerlab veth (0% loss), switch keeps `/bin/sh`, and the standard
+      `disable_ipv6()` flush clears the stray link-local (in the real pipeline disable_ipv6 runs
+      BEFORE ifaces come up, so it never appears). (2) Two `firewalld-fw:latest` containers come up
+      in ~1s, both answer `:8080` independently, a DROP on one is invisible on the other.
+- [x] **Phase B — multi-firewall security engine + GET /scenarios** (behavior-preserving).
+      `SecurityEngine` now keys FirewalldDriver by fw id (`_fws: dict`); every rule method takes
+      optional `fw_id` defaulting to the sole firewall (central-hub unchanged); `list_rules(None)`
+      aggregates across firewalls tagging each parsed rule with `firewall`; `flush(None)` flushes all.
+      `chat.resolve_firewall(src_ip, scenario)` picks the enforcing fw by source subnet (NEVER the
+      model). `_deploy_and_connect` connects EVERY fw node. `POST /rules` + `RuleRequest.firewall`
+      + dispatch use the resolution. `/health` adds `firewalls`. New `GET /scenarios`.
+      LLM tool schema deliberately UNCHANGED (model-driven targeting is the droppable tail).
+      GATE: `/tmp/gate_b.py` deployed central-hub, drove block/allow/two-pair-flush/port-block
+      deterministically (no LLM) — all PASS, drops tag `fw`, describe text byte-identical (no
+      `[on fw]` for a single fw). Vuln scan skipped (scanner untouched). Lab torn down clean.
+- [ ] Phase C — switches + multi-subnet routing + `scenarios/two-subnet-ixp.yaml`.
+- [ ] Phase D — data-driven frontend + subnet clouds + scenario dropdown + multi-fw display.
+
 ## Session summary (2026-05-31)
 Shipped Phase 1 (engine refactor) + 2a (IPv6) + 2b (Reset). 4 commits: 2f2a877, 623073f, 9a19088, b1fd7c7.
 NEXT SESSION: Phase 2c console/debug page — react-router /console + PTY-over-WebSocket (docker SDK exec_run

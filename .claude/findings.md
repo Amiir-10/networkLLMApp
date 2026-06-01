@@ -200,6 +200,33 @@ Amir's call: **real images, not simulated-in-alpine** ("I want realism").
 - **NOT done:** 3a (scenario dropdown), 3c (multi-image dockerscan), dnsmasq/UDP. Frontend topology.ts still
   hardcodes central-hub nodes; it does not yet display the per-node service/ports (cosmetic; do in 3a).
 
+## Phase A spike facts (2026-06-01 #2) — verified, reusable for Phase C
+- **L2 switch = Alpine + `ip link add br0 type bridge` + `ip link set ethN master br0`.** Forwards
+  across containerlab point-to-point veth (confirmed pcL→pcR 0% loss through the bridge). The
+  switch keeps a real `/bin/sh` for the console PTY. **No IP on the switch's data ports** (pure L2).
+- **IPv6 on bridged nodes:** the creation-time sysctls + `netconfig.disable_ipv6()` (runs FIRST in
+  `configure_nodes`, setting `all.disable_ipv6=1` before any iface comes up) keep `ip -6 addr`
+  empty. In a topology that skips the post-deploy flush a link-local can slip onto a brought-up
+  eth — so for the switch branch, do bridge setup AFTER disable_ipv6 (which the loop already does).
+- **Two `firewalld-fw:latest` coexist fine** (fresh containers; the dbus crash-loop is only about
+  RESTARTING a long-lived one). Both answer `firewall-cmd --state` + `:8080` in ~1s, fully isolated.
+
+## fw-api edge (not a bug to fix now): `allow(proto="tcp")` with no port 500s
+`FirewalldDriver.allow(src,dst,"tcp")` removes drops by pair fine, then tries to ADD an ACCEPT with
+a bare `protocol value="tcp"` → fw-api 500. **The real re-enable path never hits this**: the app/3b
+recipe calls `allow(src,dst)` (default icmp), and allow() clears EVERY drop for the pair regardless
+of proto — so a tcp:80 drop is cleared by an icmp-proto allow. Don't "fix" by passing proto on allow.
+
+## Phase B — multi-firewall engine (2026-06-01 #2)
+- `SecurityEngine._fws: dict[fw_id, FirewalldDriver]`. `_resolve(fw_id)`: explicit id → that fw;
+  None + exactly one fw → that fw (central-hub unchanged); None + several → raise (caller must
+  resolve first). `list_rules(None)` aggregates + tags each parsed rule `firewall`; `flush(None)`
+  flushes ALL. `chat.resolve_firewall(src_ip, scenario)` = fw whose iface subnet contains src_ip,
+  else first fw — deterministic, the model never chooses (LLM tool schema left unchanged on purpose).
+- Call sites updated: `_deploy_and_connect` loops every fw node; `POST /rules`+`RuleRequest.firewall`;
+  `dispatch_tool` block/allow; `_describe_active_drops` adds `[on <fw>]` ONLY when >1 fw connected
+  (single-fw prompt stays byte-identical). `/health` gains `firewalls: [...]`. New `GET /scenarios`.
+
 ## LESSON: `pkill -f "uvicorn app.main"` kills its OWN shell (exit 144)
 `pkill -f <pat>` matches full command lines — the shell running the pkill has `<pat>` in its own argv,
 so pkill SIGTERMs its parent shell before the rest of the `;`-chain runs (looks like "exit 144, no

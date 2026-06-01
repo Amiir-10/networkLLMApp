@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from app.engines.topology import TopologyEngine, LabAlreadyRunning, LabNotFound
 from app.engines.security import SecurityEngine
 from app.lab.models import Scenario
-from app.chat import call_ollama, validate_node_args, dispatch_tool, MAX_TOOL_ITERATIONS, _node_ip_map
+from app.chat import call_ollama, validate_node_args, dispatch_tool, MAX_TOOL_ITERATIONS, _node_ip_map, resolve_firewall
 from app.prompts import build_system_prompt
 from app.metrics import MetricsCollector
 
@@ -47,6 +47,7 @@ def health() -> dict:
         "status": "ok",
         "lab_active": _active_scenario is not None,
         "firewall_connected": security.connected,
+        "firewalls": security.firewall_ids(),
     }
 
 
@@ -65,20 +66,27 @@ def _deploy_and_connect(scenario: Scenario, scenario_name: str) -> dict:
     from topology.start; callers translate those to HTTP errors.
     """
     result = topology.start(scenario)
-    fw_node = next((n for n in scenario.nodes if n.role == "firewall"), None)
-    if fw_node:
+    # Connect EVERY firewall node (central-hub has one; two-subnet-ixp has two).
+    fw_health: dict[str, dict] = {}
+    for fw_node in (n for n in scenario.nodes if n.role == "firewall"):
         mgmt_ip = topology.get_mgmt_ip(scenario_name, fw_node.id)
-        if mgmt_ip:
-            import time as _time
-            security.connect(mgmt_url=f"http://{mgmt_ip}:8080")
-            for _ in range(30):
-                try:
-                    result["firewall"] = security.health()
-                    break
-                except Exception:
-                    _time.sleep(1)
-            else:
-                result["firewall_warning"] = "firewalld API did not become ready in 30s"
+        if not mgmt_ip:
+            result.setdefault("firewall_warnings", []).append(
+                f"{fw_node.id}: could not resolve mgmt IP"
+            )
+            continue
+        security.connect(fw_node.id, mgmt_url=f"http://{mgmt_ip}:8080")
+        for _ in range(30):
+            try:
+                fw_health[fw_node.id] = security.health(fw_node.id)
+                break
+            except Exception:
+                time.sleep(1)
+        else:
+            result.setdefault("firewall_warnings", []).append(
+                f"{fw_node.id}: firewalld API did not become ready in 30s"
+            )
+    result["firewall"] = fw_health
     return result
 
 
@@ -176,7 +184,29 @@ def _describe_active_drops() -> list[str]:
         src = ip_to_node.get(r.get("src_ip"), r.get("src_ip") or "any")
         dst = ip_to_node.get(r.get("dst_ip"), r.get("dst_ip") or "any")
         proto = r.get("proto") or "all"
-        out.append(f"{src} -> {dst} ({proto})")
+        line = f"{src} -> {dst} ({proto})"
+        # Label the enforcing firewall only when several exist, so a
+        # single-firewall scenario's prompt text stays byte-identical.
+        fw = r.get("firewall")
+        if fw and len(security.firewall_ids()) > 1:
+            line += f" [on {fw}]"
+        out.append(line)
+    return out
+
+
+@app.get("/scenarios")
+def list_scenarios() -> list[dict]:
+    """Enumerate the scenarios/*.yaml the frontend dropdown can choose from.
+    Reads name + description cheaply (no full deploy); central-hub sorts first."""
+    out: list[dict] = []
+    for f in sorted(SCENARIO_DIR.glob("*.yaml")):
+        try:
+            raw = yaml.safe_load(f.read_text()) or {}
+            out.append({"name": raw.get("name", f.stem),
+                        "description": raw.get("description", "")})
+        except Exception:
+            out.append({"name": f.stem, "description": ""})
+    out.sort(key=lambda s: (s["name"] != "central-hub", s["name"]))
     return out
 
 
@@ -192,6 +222,9 @@ class RuleRequest(BaseModel):
     dst: str
     proto: str = "icmp"
     port: int | None = None
+    # Optional explicit target firewall (node id). When omitted, the backend
+    # resolves it deterministically from the source's subnet (resolve_firewall).
+    firewall: str | None = None
 
 
 @app.post("/rules")
@@ -218,8 +251,10 @@ def add_rule(req: RuleRequest) -> dict:
     ip_map = _node_ip_map(_active_scenario)
     src_ip = ip_map.get(req.src)
     dst_ip = ip_map.get(req.dst)
-    result = security.block(src_ip, dst_ip, req.proto, req.port)
-    return {"status": "added", "src": req.src, "dst": req.dst, "proto": req.proto, "port": req.port, "result": result}
+    fw_id = req.firewall or resolve_firewall(src_ip, _active_scenario)
+    result = security.block(src_ip, dst_ip, req.proto, req.port, fw_id=fw_id)
+    return {"status": "added", "src": req.src, "dst": req.dst, "proto": req.proto,
+            "port": req.port, "firewall": fw_id, "result": result}
 
 
 @app.websocket("/ws/console/{scenario_name}/{node}")

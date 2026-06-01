@@ -1,3 +1,4 @@
+import ipaddress
 import json
 
 import httpx
@@ -98,6 +99,27 @@ TOOLS = [
 ]
 
 
+def resolve_firewall(src_ip: str | None, scenario: Scenario) -> str | None:
+    """Pick which firewall enforces a rule — deterministically, never via the
+    model (llama3.1:8b won't reliably choose; see vault feedback). The firewall
+    whose interface subnet contains src_ip; else the first firewall; else None
+    (no firewall in the scenario). For a single-firewall scenario this always
+    returns that firewall, so the resolution is a no-op there."""
+    fw_nodes = [n for n in scenario.nodes if n.role == "firewall"]
+    if not fw_nodes:
+        return None
+    if src_ip:
+        try:
+            ip = ipaddress.ip_address(src_ip)
+            for n in fw_nodes:
+                for iface in n.interfaces:
+                    if iface.ip and ip in ipaddress.ip_network(iface.ip, strict=False):
+                        return n.id
+        except ValueError:
+            pass
+    return fw_nodes[0].id
+
+
 def _node_image_map(scenario: Scenario) -> dict[str, str]:
     return {node.id: node.image for node in scenario.nodes}
 
@@ -149,13 +171,15 @@ def dispatch_tool(
         dst_ip = ip_map.get(args["dst"])
         proto = args.get("proto", "icmp")
         port = args.get("port")
-        return security.block(src_ip, dst_ip, proto, port)
+        fw_id = args.get("firewall") or resolve_firewall(src_ip, scenario)
+        return security.block(src_ip, dst_ip, proto, port, fw_id=fw_id)
 
     elif name == "allow_traffic":
         src_ip = ip_map.get(args["src"])
         dst_ip = ip_map.get(args["dst"])
         proto = args.get("proto", "icmp")
-        return security.allow(src_ip, dst_ip, proto)
+        fw_id = args.get("firewall") or resolve_firewall(src_ip, scenario)
+        return security.allow(src_ip, dst_ip, proto, fw_id=fw_id)
 
     elif name == "flush_rules":
         return security.flush()

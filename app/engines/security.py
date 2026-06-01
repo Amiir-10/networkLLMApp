@@ -1,12 +1,20 @@
-"""Security engine: the single firewall + scan surface.
+"""Security engine: the firewall(s) + scan surface.
 
-Both the LLM (app.chat.dispatch_tool) and the UI/console (app.main, and the
-future console rule panel) call THIS object — never FirewalldDriver directly —
-so the block/allow/list/flush/scan logic can never drift between the two paths.
+Both the LLM (app.chat.dispatch_tool) and the UI/console (app.main, the console
+rule panel) call THIS object — never FirewalldDriver directly — so the
+block/allow/list/flush/scan logic can never drift between the two paths.
 
+Supports ONE OR MORE firewalls, keyed by firewall node id. A single-firewall
+scenario (central-hub) is unchanged: every rule method takes an optional `fw_id`
+that **defaults to the sole firewall when exactly one is connected**, so existing
+callers that pass no fw_id behave identically. A multi-firewall scenario
+(two-subnet-ixp) resolves the target firewall deterministically in the backend
+(see app.chat.resolve_firewall) — the model never has to pick one.
+
+Aggregation: `list_rules()` with no fw_id merges every firewall's rules and tags
+each parsed rule with its `firewall` id; `flush()` with no fw_id clears them all.
 FirewalldDriver's rule logic (esp. the fragile allow() drop-clearing) is wrapped
-unchanged; this engine only adds the connect/disconnect lifecycle that main.py
-previously did by reassigning a module global.
+unchanged.
 """
 from app.firewall.driver import FirewalldDriver
 from app.scanner import run_image_scan
@@ -14,37 +22,89 @@ from app.scanner import run_image_scan
 
 class SecurityEngine:
     def __init__(self) -> None:
-        self._fw: FirewalldDriver | None = None
+        self._fws: dict[str, FirewalldDriver] = {}
 
-    def connect(self, mgmt_url: str) -> None:
-        """Bind to a firewall container's REST API (called after lab deploy,
-        once the mgmt IP is known). Mirrors the old `_firewall_driver = ...`."""
-        self._fw = FirewalldDriver(mgmt_url=mgmt_url)
+    def connect(self, fw_id: str, mgmt_url: str) -> None:
+        """Bind a firewall container's REST API under its node id (called per
+        firewall node after lab deploy, once each mgmt IP is known)."""
+        self._fws[fw_id] = FirewalldDriver(mgmt_url=mgmt_url)
 
     def disconnect(self) -> None:
-        """Drop the binding (called on lab stop). Mirrors `_firewall_driver = None`."""
-        self._fw = None
+        """Drop every binding (called on lab stop/reset)."""
+        self._fws = {}
 
     @property
     def connected(self) -> bool:
-        return self._fw is not None
+        return len(self._fws) > 0
+
+    def firewall_ids(self) -> list[str]:
+        return list(self._fws.keys())
+
+    def _resolve(self, fw_id: str | None) -> tuple[str, FirewalldDriver]:
+        """Map an optional fw_id to a concrete (id, driver). None + exactly one
+        firewall = that firewall (the central-hub case). None + several = error
+        (callers must resolve a target first)."""
+        if not self._fws:
+            raise RuntimeError("No firewall connected")
+        if fw_id is not None:
+            fw = self._fws.get(fw_id)
+            if fw is None:
+                raise RuntimeError(
+                    f"Unknown firewall '{fw_id}'. Connected: {self.firewall_ids()}"
+                )
+            return fw_id, fw
+        if len(self._fws) == 1:
+            (only_id, only_fw), = self._fws.items()
+            return only_id, only_fw
+        raise RuntimeError(
+            f"Ambiguous firewall (connected: {self.firewall_ids()}); specify fw_id"
+        )
 
     # ── firewall rule CRUD (delegated, logic unchanged) ──────────────────
-    def health(self) -> dict:
-        return self._fw.health()
+    def health(self, fw_id: str | None = None) -> dict:
+        _, fw = self._resolve(fw_id)
+        return fw.health()
 
     def block(self, src_ip: str | None, dst_ip: str | None, proto: str = "icmp",
-              port: int | str | None = None) -> dict:
-        return self._fw.block(src_ip, dst_ip, proto, port)
+              port: int | str | None = None, fw_id: str | None = None) -> dict:
+        _, fw = self._resolve(fw_id)
+        return fw.block(src_ip, dst_ip, proto, port)
 
-    def allow(self, src_ip: str | None, dst_ip: str | None, proto: str = "icmp") -> dict:
-        return self._fw.allow(src_ip, dst_ip, proto)
+    def allow(self, src_ip: str | None, dst_ip: str | None, proto: str = "icmp",
+              fw_id: str | None = None) -> dict:
+        _, fw = self._resolve(fw_id)
+        return fw.allow(src_ip, dst_ip, proto)
 
-    def list_rules(self) -> dict:
-        return self._fw.list_rules()
+    def flush(self, fw_id: str | None = None) -> dict:
+        """fw_id given = flush that firewall; None = flush EVERY firewall (the
+        flush_rules "clear everything" intent)."""
+        if fw_id is None:
+            return {"flushed": {fid: fw.flush() for fid, fw in self._fws.items()}}
+        _, fw = self._resolve(fw_id)
+        return fw.flush()
 
-    def flush(self) -> dict:
-        return self._fw.flush()
+    def list_rules(self, fw_id: str | None = None) -> dict:
+        """fw_id given = that firewall's rules; None = aggregate across all
+        firewalls. Either way each parsed rule is tagged with its `firewall` id
+        (extra field; harmless to single-firewall consumers)."""
+        if fw_id is not None:
+            fid, fw = self._resolve(fw_id)
+            return self._tagged(fid, fw.list_rules())
+        forward: list = []
+        zone: list = []
+        parsed: list = []
+        for fid, fw in self._fws.items():
+            r = fw.list_rules()
+            forward += r.get("forward_rules", [])
+            zone += r.get("zone_rules", [])
+            parsed += [{**p, "firewall": fid} for p in r.get("parsed", [])]
+        return {"forward_rules": forward, "zone_rules": zone, "parsed": parsed}
+
+    @staticmethod
+    def _tagged(fid: str, r: dict) -> dict:
+        r = dict(r)
+        r["parsed"] = [{**p, "firewall": fid} for p in r.get("parsed", [])]
+        return r
 
     # ── image vulnerability scan ─────────────────────────────────────────
     def scan(self, image: str) -> dict:
