@@ -266,6 +266,21 @@ of proto — so a tcp:80 drop is cleared by an icmp-proto allow. Don't "fix" by 
   graphs (counts/ids/paths/clouds all correct). The visual itself (cloud aesthetics, dagre layout, animation
   playback) needs Amir's browser pass — no browser tooling in this env (same as the 2c console).
 
+## Phase D review fixes (2026-06-01 #2, commit bf89ba9)
+Amir's review of the first Phase-D cut → three fixes:
+- **Console blank canvas:** `ConsolePage` built topology only from the live `health.scenario`, so with no
+  lab running it had nothing to draw. Fix = lifted ALL shared state into `App` as one shell; `ChatView`
+  + `ConsoleView` are prop-driven bodies sharing the same topology built from the SELECTED scenario →
+  console shows a preview pre-lab (live shells gated on `labReady` with a hint). `pages/ConsolePage.tsx`
+  removed; `PingEvent` moved to `api.ts`.
+- **Nav integration:** floating pill → a real top **tab bar** (Chat | Console) in the unified header with
+  the scenario dropdown + lab controls + status. `main.tsx` no longer uses react-router (state-based view;
+  react-router-dom is now an unused dep — fine to leave or prune later).
+- **Cloud = subnet not device:** raised the cloud threshold to `MIN_CLOUD_MEMBERS = 3` in `topology.ts`.
+  central-hub (each PC alone on its own /24 + the shared gateway) → 0 clouds; two-subnet-ixp → LAN-A,
+  LAN-B, IXP only (transit /30s excluded). NOTE for Amir: central-hub PCs are genuinely on 3 separate
+  /24s, so there's no single shared subnet to wrap — that's why it shows no cloud, not a bug.
+
 ## LESSON: `pkill -f "uvicorn app.main"` kills its OWN shell (exit 144)
 `pkill -f <pat>` matches full command lines — the shell running the pkill has `<pat>` in its own argv,
 so pkill SIGTERMs its parent shell before the rest of the `;`-chain runs (looks like "exit 144, no
