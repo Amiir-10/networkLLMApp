@@ -50,17 +50,27 @@ Decisions (Amir, this session):
 - [x] requirements.txt unchanged (pty/termios/fcntl/struct/subprocess all stdlib).
 - [x] VERIFIED via `/tmp/ws_verify.py` (websockets 16.0 in .venv) against live central-hub: pc1 real shell, `ip -6 addr` empty, ping pc2 0% loss; fw `firewall-cmd --state` running, `stty size`=40 120 (resize honored); unknown node closes 4404; no orphaned `docker exec` after close. ALL PASS. Committed 1b.
 
-### Frontend (commit 2)
-- [ ] deps: react-router-dom @xterm/xterm @xterm/addon-fit.
-- [ ] main.tsx: BrowserRouter; routes `/`=App (unchanged behaviour), `/console`=ConsolePage; minimal top-nav link toggle.
-- [ ] TopologyPane: add optional `onNodeClick` prop (non-breaking) → ReactFlow onNodeClick.
-- [ ] pages/ConsolePage.tsx: full-screen TopologyPane (reuse, no chat); click node → slide-in panel.
-- [ ] components/ConsoleTerminal.tsx: xterm + fit + ws; onData→send input, onResize→send resize, onmessage→term.write.
-- [ ] fw panel: rules list (fetchRules) + add-rule form (api.addRule → POST /rules); refetch after add. Main `/` view mirrors because both read /rules.
-- [ ] api.ts: addRule(src,dst,proto) + wsConsoleUrl(scenario,node).
-- [ ] VERIFY frontend: /console → click pc1 → real shell + ip -6 empty + ping pc2; click fw → add DROP via form → appears in / view; LLM + form produce identical rules. Commit 2.
+### Frontend (commit 2 = `44bb5a5`) — DONE
+- [x] deps: react-router-dom @xterm/xterm @xterm/addon-fit.
+- [x] main.tsx: BrowserRouter; routes `/`=App (unchanged behaviour), `/console`=ConsolePage; floating pill toggle (fixed + pointer-events-none wrapper → no layout shift to App).
+- [x] TopologyPane: added optional `onNodeClick` prop (non-breaking) → ReactFlow onNodeClick.
+- [x] pages/ConsolePage.tsx: full-screen TopologyPane (reuse, no chat); own health poll + rules fetch; click node → slide-in 460px panel.
+- [x] components/ConsoleTerminal.tsx: xterm + FitAddon + ws; onData→input frame, ResizeObserver→fit+resize frame, onmessage→term.write; remount-per-node (React key) for a fresh PTY; status dot.
+- [x] fw panel (ConsolePage FirewallPanel): live DROP list + add-rule form (api.addRule → POST /rules); refetch after add. `/` view mirrors (both read /rules).
+- [x] api.ts: addRule(src,dst,proto) + wsConsoleUrl(scenario,node).
+- [x] VERIFIED: tsc + vite build clean (188 modules); dev server serves `/` and `/console` (SPA fallback 200). ws protocol = the one proven live via /tmp/ws_verify.py against pc1/fw; form path = the already-parity-tested POST /rules → GET /rules mirror. **In-browser click-through NOT run (no browser automation in this env)** — that is the one open manual check for Amir. Committed 2.
 
 NOTE (Phase-3 carry): console reuses central-hub-specific TopologyPane (hardcoded node positions). Generalizing clickable nodes from arbitrary scenarios is Phase 3 (scenario dropdown) — acceptable for 2c single-scenario.
+
+## Phase 2c — COMPLETE (2026-06-01, session #3)
+All three parts shipped + committed: `042317e` POST /rules, `0a2db33` ws PTY terminal, `44bb5a5` /console frontend.
+Backend fully verified live; frontend verified by build + dev-server + proven API/ws layers. Only open item: a
+human in-browser click-through of /console (no browser tooling here).
+
+## Phase 3 — Nice-to-haves (NEXT, not started)
+- 3a. Topology dropdown: `GET /scenarios` enumerates scenarios/*.yaml; `<select>` bound to a scenario state var that Start/Reset/Stop/console key off. Generalizes the hardcoded-central-hub console.
+- 3b. Real PC services: per-node service/cmd/ports in scenario YAML → netconfig.launch_service() after L3 (pc1=nginx:alpine:80, pc2=traefik/whoami:80, pc3=postgres:16-alpine:5432, + dnsmasq:53). Port-aware block/allow. **Any new image still gets IPv6 disabled automatically.**
+- 3c. Multi-image dockerscan (low priority): security.scan accept list/"all", iterate, aggregate.
 
 ## Write-back — DONE 2026-05-31 (session #1)
 - [x] session-log.md (## 2026-05-31 #1), README (Brain Dump + status), decisions-log (impl entry), Demo-2 plan status header

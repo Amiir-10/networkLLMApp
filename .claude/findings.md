@@ -163,6 +163,21 @@ improvements verified against the live lab:
 Verification: `/tmp/ws_verify.py` (recreate from this if /tmp cleared) — websockets 16.0 client, drives
 pc1 + fw, asserts the 6 gate points. ALL PASS; no orphaned `docker exec` after teardown (`pgrep` clean).
 
+## Phase 2c part 3 — frontend `/console` (2026-06-01, committed `44bb5a5`)
+- Deps added: `react-router-dom @xterm/xterm @xterm/addon-fit`.
+- `main.tsx`: BrowserRouter, `/`=App (untouched), `/console`=ConsolePage, floating pill toggle (fixed +
+  pointer-events-none wrapper so App's h-screen layout is unchanged).
+- `ConsoleTerminal.tsx`: xterm + FitAddon over the ws. onData→`{type:input}`, ResizeObserver→fit+
+  `{type:resize}`, onmessage→term.write. Keyed by node so switching nodes tears down the old ws/PTY.
+- `ConsolePage.tsx`: full-screen reused TopologyPane (own health poll + GET /rules), `onNodeClick`→460px
+  slide-in panel. fw also gets `FirewallPanel` (live DROP list + add-rule form → `api.addRule`→POST /rules).
+- `api.ts`: `addRule(src,dst,proto="icmp")` + `wsConsoleUrl(scenario,node)`; new `ws://localhost:8000` base.
+- Verified: tsc+vite build clean (188 modules), dev server serves `/` and `/console`. NOT browser-clicked
+  (no browser automation here) — Amir's one manual check: open :5173/console, click pc1 (shell, `ip -6 addr`
+  empty, `ping pc2`), click fw (add rule via form, confirm it shows in the `/` topology view).
+- Stack left running for that check: uvicorn :8000 + fresh central-hub lab + `vite` dev :5173 (if the dev
+  bg task survives the session; else `cd gui && npm run dev`).
+
 ## LESSON: `pkill -f "uvicorn app.main"` kills its OWN shell (exit 144)
 `pkill -f <pat>` matches full command lines — the shell running the pkill has `<pat>` in its own argv,
 so pkill SIGTERMs its parent shell before the rest of the `;`-chain runs (looks like "exit 144, no
