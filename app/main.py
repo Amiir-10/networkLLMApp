@@ -1,9 +1,16 @@
+import asyncio
+import fcntl
 import json
+import os
+import pty
+import struct
+import subprocess
+import termios
 import time
 from pathlib import Path
 
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -212,6 +219,128 @@ def add_rule(req: RuleRequest) -> dict:
     dst_ip = ip_map.get(req.dst)
     result = security.block(src_ip, dst_ip, req.proto)
     return {"status": "added", "src": req.src, "dst": req.dst, "proto": req.proto, "result": result}
+
+
+@app.websocket("/ws/console/{scenario_name}/{node}")
+async def console_ws(websocket: WebSocket, scenario_name: str, node: str) -> None:
+    """A real PTY shell into a lab container, bridged over a WebSocket.
+
+    Transport = a genuine kernel PTY (`pty.openpty()`) wrapped around
+    `docker exec -it <container> <shell>`, NOT a simulation: line editing,
+    colours, `clear`, `vim`, `ping`, `firewall-cmd` all work for real. Output
+    is pumped async-without-threads — `loop.add_reader(master, …)` wakes us on
+    container output, we enqueue it, and a single writer task drains the queue
+    so sends stay ordered and never overlap on the one socket. Protocol is JSON
+    frames: {"type":"input","data":str} and {"type":"resize","cols":int,"rows":int}.
+    """
+    await websocket.accept()
+
+    scenario = _active_scenario
+    if scenario is None or scenario.name != scenario_name:
+        await websocket.close(code=4404)
+        return
+    node_obj = next((n for n in scenario.nodes if n.id == node), None)
+    if node_obj is None:
+        await websocket.close(code=4404)
+        return
+
+    # fw has /usr/bin/bash; alpine PCs/router are busybox (sh only).
+    shell = "/usr/bin/bash" if node_obj.role == "firewall" else "/bin/sh"
+    container = f"clab-{scenario_name}-{node}"
+
+    master, slave = pty.openpty()
+    # Sane initial window size; the frontend sends a resize frame on connect.
+    fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+
+    def _child_setup() -> None:
+        # New session + make the slave (now fd 0/1/2) the controlling TTY, so
+        # the `docker exec` client receives SIGWINCH on TIOCSWINSZ and forwards
+        # the resize into the container's TTY. Without this, resize is a no-op.
+        os.setsid()
+        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+    proc = subprocess.Popen(
+        ["docker", "exec", "-it", container, shell],
+        stdin=slave, stdout=slave, stderr=slave,
+        preexec_fn=_child_setup,
+    )
+    os.close(slave)
+    os.set_blocking(master, False)
+
+    loop = asyncio.get_running_loop()
+    out_queue: asyncio.Queue = asyncio.Queue()
+
+    def on_readable() -> None:
+        try:
+            data = os.read(master, 65536)
+        except OSError:
+            data = b""
+        if data:
+            out_queue.put_nowait(data)
+        else:
+            # EOF: the container shell exited / the pty closed.
+            loop.remove_reader(master)
+            out_queue.put_nowait(None)
+
+    loop.add_reader(master, on_readable)
+
+    async def pump_output() -> None:
+        try:
+            while True:
+                data = await out_queue.get()
+                if data is None:
+                    break
+                await websocket.send_text(data.decode(errors="replace"))
+        finally:
+            # Unblock the input loop's receive_text() when the shell ended.
+            try:
+                await websocket.close()
+            except RuntimeError:
+                pass
+
+    writer = asyncio.create_task(pump_output())
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                frame = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            ftype = frame.get("type")
+            if ftype == "input":
+                try:
+                    os.write(master, frame.get("data", "").encode())
+                except OSError:
+                    break
+            elif ftype == "resize":
+                try:
+                    cols = int(frame.get("cols", 80))
+                    rows = int(frame.get("rows", 24))
+                    fcntl.ioctl(
+                        master, termios.TIOCSWINSZ,
+                        struct.pack("HHHH", rows, cols, 0, 0),
+                    )
+                except (OSError, ValueError):
+                    pass
+    except WebSocketDisconnect:
+        pass
+    finally:
+        try:
+            loop.remove_reader(master)
+        except (ValueError, OSError):
+            pass
+        out_queue.put_nowait(None)
+        writer.cancel()
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        try:
+            os.close(master)
+        except OSError:
+            pass
 
 
 class ChatRequest(BaseModel):
