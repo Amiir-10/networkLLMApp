@@ -178,6 +178,28 @@ pc1 + fw, asserts the 6 gate points. ALL PASS; no orphaned `docker exec` after t
 - Stack left running for that check: uvicorn :8000 + fresh central-hub lab + `vite` dev :5173 (if the dev
   bg task survives the session; else `cd gui && npm run dev`).
 
+## Phase 3b — real PC services + port-aware firewall (2026-06-01, `42a527f` + `16cbcdf`)
+Amir's call: **real images, not simulated-in-alpine** ("I want realism").
+- **Hard constraint discovered:** every node MUST have a shell + `ip` (the console `docker exec` shell + L3
+  config both need them). So **scratch images are out** — `traefik/whoami` (the plan's pc2) has neither.
+  nginx:alpine and postgres:16-alpine ARE alpine-based (busybox sh + ip), so they work. pc2 = 2nd nginx.
+- **Model:** Node gained `idle` (default True = `sleep infinity` keepalive; set False when the image runs a
+  service as PID 1), `env` (→ clab node env), `launch` (shell cmd run detached after L3 — generalizes the old
+  :8080 nc listener, now unused by central-hub), `ports` (declared listening set; feeds port-aware UI/scan).
+- **Pulls:** `nginx:alpine`, `postgres:16-alpine` pulled (needed internet once; now cached). postgres needs
+  `POSTGRES_HOST_AUTH_METHOD=trust` or it exits; it listens on *:5432. `docker exec` runs as root on both
+  (no USER set), so L3 config + console work. nginx official CMD is `daemon off;` so it stays PID 1.
+- **Port-aware:** fw-api already builds `port port="X" protocol="tcp"` rich-rules and parse_rich_rule reads
+  `port`, so it was pure app plumbing: optional `port` through FirewalldDriver.block → SecurityEngine.block →
+  block_traffic tool + POST /rules + console form (port field shown for tcp/udp). **allow() NOT touched** — it
+  clears every drop for the src/dst pair, rebuilding each delete (incl. its port) from the parsed rule.
+- **Verify recipe (deterministic, no LLM):** `wget` pc2→pc1 (nginx title), `nc -w3 pc1→pc3 5432`, `pg_isready`
+  on pc3; POST /rules tcp:80 pc2→pc1 ⇒ HTTP blocked, `ping` still 0% loss, pg still reachable; then
+  `FirewalldDriver(fw_mgmt).allow(pc2_ip, pc1_ip)` ⇒ drops `[]`, HTTP restored. fw mgmt ip via
+  `docker inspect clab-central-hub-fw --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'`.
+- **NOT done:** 3a (scenario dropdown), 3c (multi-image dockerscan), dnsmasq/UDP. Frontend topology.ts still
+  hardcodes central-hub nodes; it does not yet display the per-node service/ports (cosmetic; do in 3a).
+
 ## LESSON: `pkill -f "uvicorn app.main"` kills its OWN shell (exit 144)
 `pkill -f <pat>` matches full command lines — the shell running the pkill has `<pat>` in its own argv,
 so pkill SIGTERMs its parent shell before the rest of the `;`-chain runs (looks like "exit 144, no

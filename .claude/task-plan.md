@@ -67,10 +67,10 @@ All three parts shipped + committed: `042317e` POST /rules, `0a2db33` ws PTY ter
 Backend fully verified live; frontend verified by build + dev-server + proven API/ws layers. Only open item: a
 human in-browser click-through of /console (no browser tooling here).
 
-## Phase 3 — Nice-to-haves (NEXT, not started)
-- 3a. Topology dropdown: `GET /scenarios` enumerates scenarios/*.yaml; `<select>` bound to a scenario state var that Start/Reset/Stop/console key off. Generalizes the hardcoded-central-hub console.
-- 3b. Real PC services: per-node service/cmd/ports in scenario YAML → netconfig.launch_service() after L3 (pc1=nginx:alpine:80, pc2=traefik/whoami:80, pc3=postgres:16-alpine:5432, + dnsmasq:53). Port-aware block/allow. **Any new image still gets IPv6 disabled automatically.**
-- 3c. Multi-image dockerscan (low priority): security.scan accept list/"all", iterate, aggregate.
+## Phase 3 — Nice-to-haves
+- [ ] 3a. Topology dropdown: `GET /scenarios` enumerates scenarios/*.yaml; `<select>` bound to a scenario state var that Start/Reset/Stop/console key off. Generalizes the hardcoded-central-hub console. NOT STARTED.
+- [x] **3b. Real PC services — DONE (2026-06-01, session #3), commits `42a527f` + `16cbcdf`.** Amir chose **real images** over simulated-in-alpine. Node model gained `idle`/`env`/`launch`/`ports`; `_to_containerlab` omits `sleep infinity` when `idle:false` so an image's service runs as PID 1; `env` passed to the clab node; the old hardcoded :8080 listener generalized to `netconfig.launch_service` (YAML `launch`). central-hub: pc1/pc2=`nginx:alpine` (:80), pc3=`postgres:16-alpine` (:5432, `POSTGRES_HOST_AUTH_METHOD=trust`). **Plan deviation:** `traefik/whoami` (the plan's pc2) is a scratch image → no shell/`ip` → breaks the console + L3, so pc2 is a 2nd nginx (also sets up the port-block demo). dnsmasq/UDP deferred (no base-alpine dnsmasq; offline apk risk). **Port-aware block:** threaded an optional `port` through `FirewalldDriver.block`→`SecurityEngine.block`→`block_traffic` tool + `POST /rules` + the console form (fw-api already built port rich-rules; `allow()` untouched — clears by pair incl. port). **Verified live:** ip-6 empty on the new images; pc2→pc1 nginx + pc1→pc3:5432 routed through fw; block tcp:80 pc2→pc1 ⇒ HTTP blocked while ICMP+postgres survive; allow clears it; core ICMP demo intact.
+- [ ] 3c. Multi-image dockerscan (low priority): security.scan accept list/"all", iterate, aggregate. NOT STARTED.
 
 ## Write-back — DONE 2026-05-31 (session #1)
 - [x] session-log.md (## 2026-05-31 #1), README (Brain Dump + status), decisions-log (impl entry), Demo-2 plan status header
