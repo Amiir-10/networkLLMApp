@@ -23,6 +23,7 @@ export interface DeviceNodeData {
 
 export interface CloudNodeData {
   cidr: string;
+  label: string;   // human label, e.g. "LAN · 10.10.1.0/24" / "IXP · 100.64.0.0/24"
   [key: string]: unknown;
 }
 
@@ -160,6 +161,15 @@ export function buildTopology(graph: ScenarioGraph): BuiltTopology {
       maxX = Math.max(maxX, pos[id].x + NODE_W);
       maxY = Math.max(maxY, pos[id].y + NODE_H);
     }
+    // Name the subnet by what lives on it so the clouds read as distinct
+    // segments (not just "/24"): a subnet with hosts = LAN; one that only joins
+    // routers = an IXP/peering fabric.
+    const roles = ids.map((id) => byId[id]?.role);
+    const kind = roles.includes("pc")
+      ? "LAN"
+      : roles.filter((r) => r === "router").length >= 2
+      ? "IXP"
+      : "subnet";
     cloudNodes.push({
       id: `cloud:${cidr}`,
       type: "cloud",
@@ -167,7 +177,7 @@ export function buildTopology(graph: ScenarioGraph): BuiltTopology {
       zIndex: 0,
       selectable: false,
       draggable: false,
-      data: { cidr },
+      data: { cidr, label: `${kind} · ${cidr}` },
       style: {
         width: maxX - minX + CLOUD_PAD * 2,
         height: maxY - minY + CLOUD_PAD * 2 + CLOUD_LABEL_H,

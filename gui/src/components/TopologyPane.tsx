@@ -81,14 +81,14 @@ function ruleChipLabel(rule: ParsedRule, ipMap: Record<string, string>): string 
 // --- Cloud (subnet) node — non-interactive background region ---
 
 function CloudNode({ data }: NodeProps) {
-  const { cidr } = data as { cidr: string };
+  const { label } = data as { label: string };
   return (
     <div
       className="w-full h-full rounded-2xl border-2 border-dashed border-sky-300/70 bg-sky-50/40 pointer-events-none"
       style={{ boxSizing: "border-box" }}
     >
       <span className="absolute top-1 left-3 text-[10px] font-mono font-semibold text-sky-500/80 tracking-wide">
-        {cidr}
+        {label}
       </span>
     </div>
   );
