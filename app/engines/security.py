@@ -109,3 +109,24 @@ class SecurityEngine:
     # ── image vulnerability scan ─────────────────────────────────────────
     def scan(self, image: str) -> dict:
         return run_image_scan(image)
+
+    def scan_images(self, images: list[str]) -> dict:
+        """Scan one or more images, deduping identical images first: the scan
+        target is the IMAGE, so two nodes on the same image (e.g. pc1/pc2 both
+        nginx:alpine) are scanned ONCE — this is the multi-scan efficiency win.
+        Returns a per-image scan list plus a severity total aggregated across
+        every SUCCESSFUL scan (an errored/unpullable image is reported in its
+        own scan entry but skipped in the total, so one bad image can't break
+        the batch)."""
+        seen: list[str] = []
+        for img in images:
+            if img not in seen:
+                seen.append(img)
+        scans = [run_image_scan(img) for img in seen]
+        total: dict[str, int] = {}
+        for s in scans:
+            if "error" in s:
+                continue
+            for sev, n in (s.get("by_severity") or {}).items():
+                total[sev] = total.get(sev, 0) + n
+        return {"images_scanned": len(seen), "scans": scans, "by_severity_total": total}

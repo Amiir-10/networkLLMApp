@@ -1,5 +1,6 @@
 import ipaddress
 import json
+import re
 
 import httpx
 
@@ -86,11 +87,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "vulnerability_scan",
-            "description": "Run a security vulnerability scan on a node's container image. Reports CVEs, CIS Docker benchmark issues, hardcoded secrets, and supply-chain risks. Use when the user asks to scan, audit, or check the security/vulnerabilities of a node.",
+            "description": "Run a security vulnerability scan on one or more nodes' container images. Reports CVEs, CIS Docker benchmark issues, hardcoded secrets, and supply-chain risks. Use when the user asks to scan, audit, or check the security/vulnerabilities of a node. The target is a single node id (e.g. 'pc1'), several node ids separated by commas/spaces (e.g. 'pc1, pc2, fw'), or the word 'all' to scan every node. Nodes sharing the same image are scanned only once.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "target": {"type": "string", "description": "Node ID to scan (e.g. pc1, fw, router)"},
+                    "target": {"type": "string", "description": "A node id (e.g. 'pc1'), a comma/space-separated list of node ids (e.g. 'pc1, fw'), or 'all' for every node."},
                 },
                 "required": ["target"],
             },
@@ -208,10 +209,33 @@ def dispatch_tool(
         return {"topology": nodes_info, "firewall_rules": rules}
 
     elif name == "vulnerability_scan":
-        target = args.get("target", "")
+        # Parse the target string deterministically in the backend — llama3.1:8b
+        # won't reliably emit a JSON array, so the tool schema stays a single
+        # string and WE expand "all"/comma-separated into node ids here.
+        target = str(args.get("target", "")).strip()
         image_map = _node_image_map(scenario)
-        if target not in image_map:
-            return {"error": f"Unknown node '{target}'. Valid nodes: {sorted(image_map)}"}
-        return {"target": target, "image": image_map[target], **security.scan(image_map[target])}
+        if target.lower() in ("all", "network", "everything", "*"):
+            node_ids = list(image_map.keys())
+        else:
+            node_ids = [t for t in re.split(r"[,\s]+", target) if t]
+        if not node_ids:
+            return {"error": "No scan target given. Provide a node id, a list, or 'all'."}
+        unknown = [n for n in node_ids if n not in image_map]
+        if unknown:
+            return {"error": f"Unknown node(s) {unknown}. Valid nodes: {sorted(image_map)}"}
+        # Dedupe to unique images, recording which requested nodes share each.
+        images: list[str] = []
+        nodes_for_image: dict[str, list[str]] = {}
+        for nid in node_ids:
+            img = image_map[nid]
+            if img not in nodes_for_image:
+                nodes_for_image[img] = []
+                images.append(img)
+            nodes_for_image[img].append(nid)
+        result = security.scan_images(images)
+        for s in result["scans"]:
+            s["nodes"] = nodes_for_image.get(s.get("image"), [])
+        result["targets"] = node_ids
+        return result
 
     return {"error": f"Unknown tool: {name}"}
