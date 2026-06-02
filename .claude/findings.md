@@ -297,6 +297,25 @@ so `pkill -f` matches the parent shell's own cmdline (it holds the whole line) a
 restart runs. **Fix: run the kill and the restart as SEPARATE Bash calls** (different shell processes).
 Worked first try once split: call 1 = `pkill -f "[u]vicorn app.main"`; call 2 = the `(uvicorn … &); curl`.
 
+## Phase 3c — multi-image dockerscan (2026-06-02, `962980f`)
+- **The scan target is the IMAGE, not the node** (scanner.py docstring). So multi-scan dedupes by image: in
+  central-hub 5 nodes = 4 unique images (nginx×2, postgres, alpine, firewalld-fw); in two-subnet-ixp **13 nodes = only
+  4 unique images** (nginx×4, postgres×2, alpine×5, firewalld-fw×2). `"scan all"` of the 13-node lab is 4 scans, not 13.
+- **`SecurityEngine.scan_images(images)`** dedupes (order-preserving) → `run_image_scan` each unique image →
+  `{"images_scanned", "scans":[per-image summary], "by_severity_total"}`. `by_severity_total` SUMS only scans without
+  an `"error"` key (run_image_scan returns `{"error":...}`, never raises — one unpullable image must not break the batch).
+  `scan(image)` (single) kept for back-compat.
+- **`vulnerability_scan` tool**: schema stays a single `target` STRING on purpose — llama3.1:8b won't reliably emit a
+  JSON array (the standing prompt-nudges-don't-hold rule). Backend parses: `"all"/"network"/"everything"/"*"` → every
+  node; else `re.split(r"[,\s]+")` → node ids. Resolves to unique images recording `nodes` per image; returns the
+  scan_images result + `targets`. Unknown/empty target → error, no scan run.
+- **Browser path**: `gui/src/api.ts sendChat` is a plain `fetch` with **no AbortController/timeout** → a single ~2min
+  scan is NOT artificially aborted (browser network idle timeout ~300s applies). So single/few-node scan survives the
+  full `/chat` round-trip. `"scan all"` ≈ 4×2min sequential → can exceed the browser idle timeout; functional-but-slow,
+  not the realistic demo invocation. No frontend change, no REST endpoint — scan is still LLM-only via the chat tool.
+- Tests (recreate from these if /tmp cleared): `/tmp/test_3c_logic.py` (7 stubbed dispatch cases, instant) +
+  `/tmp/test_3c_real.py` (real dockerscan, pc1+pc2 → one nginx scan; ~2min; no lab needed — scan reads the local image).
+
 ### Backend state desync if you tear a lab down OUTSIDE the backend
 `containerlab destroy` (any teardown not via `POST /lab/stop`) leaves the backend's in-memory
 `_active_scenario` + security connections stale → `/health` keeps reporting `lab_active:true` with the

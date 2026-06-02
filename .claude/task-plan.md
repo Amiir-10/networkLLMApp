@@ -70,7 +70,16 @@ human in-browser click-through of /console (no browser tooling here).
 ## Phase 3 — Nice-to-haves
 - [ ] 3a. Topology dropdown: `GET /scenarios` enumerates scenarios/*.yaml; `<select>` bound to a scenario state var that Start/Reset/Stop/console key off. Generalizes the hardcoded-central-hub console. NOT STARTED.
 - [x] **3b. Real PC services — DONE (2026-06-01, session #3), commits `42a527f` + `16cbcdf`.** Amir chose **real images** over simulated-in-alpine. Node model gained `idle`/`env`/`launch`/`ports`; `_to_containerlab` omits `sleep infinity` when `idle:false` so an image's service runs as PID 1; `env` passed to the clab node; the old hardcoded :8080 listener generalized to `netconfig.launch_service` (YAML `launch`). central-hub: pc1/pc2=`nginx:alpine` (:80), pc3=`postgres:16-alpine` (:5432, `POSTGRES_HOST_AUTH_METHOD=trust`). **Plan deviation:** `traefik/whoami` (the plan's pc2) is a scratch image → no shell/`ip` → breaks the console + L3, so pc2 is a 2nd nginx (also sets up the port-block demo). dnsmasq/UDP deferred (no base-alpine dnsmasq; offline apk risk). **Port-aware block:** threaded an optional `port` through `FirewalldDriver.block`→`SecurityEngine.block`→`block_traffic` tool + `POST /rules` + the console form (fw-api already built port rich-rules; `allow()` untouched — clears by pair incl. port). **Verified live:** ip-6 empty on the new images; pc2→pc1 nginx + pc1→pc3:5432 routed through fw; block tcp:80 pc2→pc1 ⇒ HTTP blocked while ICMP+postgres survive; allow clears it; core ICMP demo intact.
-- [ ] 3c. Multi-image dockerscan (low priority): security.scan accept list/"all", iterate, aggregate. NOT STARTED.
+- [x] **3c. Multi-image dockerscan — DONE (2026-06-02, `962980f`).** `vulnerability_scan` `target` now accepts a single
+      node id, a comma/space-separated list, or `"all"`. Tool schema stays a single STRING (llama3.1:8b won't reliably
+      emit a JSON array); backend expands it deterministically into node ids (same rule as `resolve_firewall`). Targets
+      resolve to UNIQUE images, scanned once each (pc1/pc2 both nginx:alpine → 1 scan, both nodes under `nodes`).
+      New `SecurityEngine.scan_images()` dedupes + aggregates `by_severity_total` across SUCCESSFUL scans only (an
+      errored/unpullable image is in its own entry but skipped in the total). `scan(image)` kept. **Verified:** 7
+      deterministic dispatch cases (`/tmp/test_3c_logic.py`) + a REAL dockerscan e2e (`/tmp/test_3c_real.py`: pc1+pc2 →
+      one nginx:alpine scan, 6 findings, total correct). Browser note: `api.ts sendChat` has NO client timeout, so a
+      single ~2min scan survives the chat path; `"scan all"` (~4×2min) risks the browser idle timeout → functional but
+      slow, realistic demo invocation is 1–3 named nodes. No frontend / no new REST endpoint — scan stays LLM-only.
 
 ## Write-back — DONE 2026-05-31 (session #1)
 - [x] session-log.md (## 2026-05-31 #1), README (Brain Dump + status), decisions-log (impl entry), Demo-2 plan status header
