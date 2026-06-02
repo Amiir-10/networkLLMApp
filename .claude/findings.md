@@ -314,7 +314,12 @@ Worked first try once split: call 1 = `pkill -f "[u]vicorn app.main"`; call 2 = 
   full `/chat` round-trip. `"scan all"` ≈ 4×2min sequential → can exceed the browser idle timeout; functional-but-slow,
   not the realistic demo invocation. No frontend change, no REST endpoint — scan is still LLM-only via the chat tool.
 - Tests (recreate from these if /tmp cleared): `/tmp/test_3c_logic.py` (7 stubbed dispatch cases, instant) +
-  `/tmp/test_3c_real.py` (real dockerscan, pc1+pc2 → one nginx scan; ~2min; no lab needed — scan reads the local image).
+  `/tmp/test_3c_real.py` (real dockerscan, pc1+pc2 → one nginx scan; ~2min; no lab needed — scan reads the local image) +
+  `/tmp/test_3c_llm.py` (the LLM-emission check — Ollama IS in-env, so this path is testable here unlike the browser passes).
+- **LLM-emission CONFIRMED (2026-06-02, llama3.1:8b):** the new behavior was the model emitting a parseable `target`, not the
+  dispatch logic. Drove `call_ollama` (real system prompt, no lab) with 3 phrasings: "scan on **all** nodes" → `target="all"`;
+  "scan **pc1 and pc2**" → `target="pc1, pc2"`; "audit the **whole network**" → `target="all"`. All three parse cleanly to
+  node ids → the string-not-array schema choice holds against the actual model. So 3c is verified at LLM + dispatch + scanner.
 
 ### Backend state desync if you tear a lab down OUTSIDE the backend
 `containerlab destroy` (any teardown not via `POST /lab/stop`) leaves the backend's in-memory

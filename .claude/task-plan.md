@@ -77,7 +77,9 @@ human in-browser click-through of /console (no browser tooling here).
       New `SecurityEngine.scan_images()` dedupes + aggregates `by_severity_total` across SUCCESSFUL scans only (an
       errored/unpullable image is in its own entry but skipped in the total). `scan(image)` kept. **Verified:** 7
       deterministic dispatch cases (`/tmp/test_3c_logic.py`) + a REAL dockerscan e2e (`/tmp/test_3c_real.py`: pc1+pc2 →
-      one nginx:alpine scan, 6 findings, total correct). Browser note: `api.ts sendChat` has NO client timeout, so a
+      one nginx:alpine scan, 6 findings, total correct) + **LLM-emission confirmed** (`/tmp/test_3c_llm.py`: llama3.1:8b
+      emits `target="all"` for "all nodes"/"whole network" and `"pc1, pc2"` for "pc1 and pc2" — the string schema holds
+      against the real model). Browser note: `api.ts sendChat` has NO client timeout, so a
       single ~2min scan survives the chat path; `"scan all"` (~4×2min) risks the browser idle timeout → functional but
       slow, realistic demo invocation is 1–3 named nodes. No frontend / no new REST endpoint — scan stays LLM-only.
 
