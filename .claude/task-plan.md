@@ -157,3 +157,20 @@ socket=True, fallback pty.openpty+subprocess) + xterm.js per node + fw rule view
 security.block/list (SAME engine method as block_traffic). Then Phase 3 (scenarios dropdown, real PC services,
 multi-scan). Engine layer (app/engines/security.py, topology.py) is the seam the console plugs into.
 Stack left running: uvicorn :8000 + fresh central-hub lab (IPv6-off, 0 drops).
+
+---
+
+## 2026-06-04 #2 — Testing-pass bug fixes (3 bugs; root-caused before any code)
+Confirmed all root causes empirically (deployed both scenarios fresh via the backend) per systematic-debugging.
+Two of three were NOT what the bug note assumed. See `.claude/findings.md` (2026-06-04 #2 section) for the evidence.
+- [x] Commit carried-over prompts.py None-IP fix → `55520e1`
+- [x] Bug #1 (IPv6): node IPv6 was already dead (sysctls); only the clab mgmt NETWORK still had IPv6.
+      Fix = emit `mgmt:` block with ipv4-subnet + no ipv6-subnet → EnableIPv6=false → `8bc25e1`. Verified.
+- [x] Bug #2 (console block bypass): NOT IPv6 — mgmt-network bypass (name → mgmt IP, off-path from fw).
+      Fix = append `<data-ip> <name>` to every container /etc/hosts (configure_nodes final pass) → `74df3b1`.
+      Verified: by-name ping now honors DROP (100% loss).
+- [x] Bug #3 (chat wiped on console↔chat nav): lifted messages+loading+send from ChatPane up to App → `7ae3a0f`.
+      tsc -b + vite build pass. NOT browser-tested — confirm in the in-browser pass.
+- [x] findings.md updated → `3820b90`.
+Stack left running: uvicorn :8000 (detached, /tmp/nllm-backend.log) + fresh pristine two-subnet-ixp lab.
+5 commits on main, NOT pushed.
