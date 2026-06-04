@@ -82,6 +82,17 @@ export interface ChatResponse {
   };
 }
 
+// A rendered chat message. Lives at App level (not inside ChatPane) so the
+// conversation survives switching the console<->chat tabs within a session —
+// ChatPane unmounts on tab change, App does not.
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  toolCalls?: ChatResponse["tool_calls"];
+  metrics?: ChatResponse["metrics"];
+  error?: string;
+}
+
 export async function fetchHealth(): Promise<HealthResponse> {
   const res = await fetch(`${BASE}/health`);
   if (!res.ok) throw new Error(await res.text());

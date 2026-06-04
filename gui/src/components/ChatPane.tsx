@@ -1,18 +1,12 @@
 import { useState, useRef, useEffect } from "react";
-import { sendChat, clearChat, type ChatResponse, type ToolCallResult } from "../api";
-
-interface Message {
-  role: "user" | "assistant";
-  content: string;
-  toolCalls?: ChatResponse["tool_calls"];
-  metrics?: ChatResponse["metrics"];
-  error?: string;
-}
+import type { ChatResponse, ChatMessage } from "../api";
 
 interface Props {
-  model: string;
+  messages: ChatMessage[];
+  loading: boolean;
   labActive: boolean;
-  onChatComplete: (toolCalls: ToolCallResult[]) => void;
+  onSend: (text: string) => void;
+  onClear: () => void;
 }
 
 function ToolCallDetail({ tc }: { tc: ChatResponse["tool_calls"][number] }) {
@@ -47,51 +41,23 @@ function ToolCallDetail({ tc }: { tc: ChatResponse["tool_calls"][number] }) {
   );
 }
 
-export default function ChatPane({ model, labActive, onChatComplete }: Props) {
-  const [messages, setMessages] = useState<Message[]>([]);
+export default function ChatPane({ messages, loading, labActive, onSend, onClear }: Props) {
   const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  async function handleSend() {
+  function handleSend() {
     const text = input.trim();
     if (!text || loading) return;
     setInput("");
-    setMessages((prev) => [...prev, { role: "user", content: text }]);
-    setLoading(true);
-    try {
-      const resp = await sendChat(text, model);
-      onChatComplete(resp.tool_calls);
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: resp.response || "",
-          toolCalls: resp.tool_calls,
-          metrics: resp.metrics,
-        },
-      ]);
-    } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: "", error: String(err) },
-      ]);
-    } finally {
-      setLoading(false);
-    }
+    onSend(text);
   }
 
-  async function handleClear() {
-    try {
-      await clearChat();
-    } catch {
-      // best-effort
-    }
-    setMessages([]);
+  function handleClear() {
+    onClear();
   }
 
   return (

@@ -1,7 +1,7 @@
 import TopologyPane from "./TopologyPane";
 import ChatPane from "./ChatPane";
 import type { BuiltTopology } from "../topology";
-import type { ParsedRule, PingEvent, ToolCallResult } from "../api";
+import type { ParsedRule, PingEvent, ChatMessage } from "../api";
 
 interface Props {
   topology: BuiltTopology | null;
@@ -12,8 +12,10 @@ interface Props {
   model: string;
   setModel: (m: string) => void;
   models: string[];
-  chatResetKey: number;
-  onChatComplete: (toolCalls: ToolCallResult[]) => void;
+  messages: ChatMessage[];
+  chatLoading: boolean;
+  onSend: (text: string) => void;
+  onClear: () => void;
 }
 
 // The chat workspace: live topology on the left, LLM chat on the right.
@@ -26,8 +28,10 @@ export default function ChatView({
   model,
   setModel,
   models,
-  chatResetKey,
-  onChatComplete,
+  messages,
+  chatLoading,
+  onSend,
+  onClear,
 }: Props) {
   return (
     <div className="flex-1 flex min-h-0">
@@ -60,7 +64,7 @@ export default function ChatView({
           </select>
         </div>
         <div className="flex-1 min-h-0">
-          <ChatPane key={chatResetKey} model={model} labActive={labReady} onChatComplete={onChatComplete} />
+          <ChatPane messages={messages} loading={chatLoading} labActive={labReady} onSend={onSend} onClear={onClear} />
         </div>
       </div>
     </div>

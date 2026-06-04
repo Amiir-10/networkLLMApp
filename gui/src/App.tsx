@@ -9,12 +9,15 @@ import {
   startLab,
   stopLab,
   resetLab,
+  sendChat,
+  clearChat,
   type HealthResponse,
   type ParsedRule,
   type ToolCallResult,
   type PingTestResult,
   type PingEvent,
   type ScenarioSummary,
+  type ChatMessage,
 } from "./api";
 import { buildTopology, type BuiltTopology } from "./topology";
 
@@ -39,7 +42,12 @@ export default function App() {
   const [labError, setLabError] = useState<string | null>(null);
   const [firewallRules, setFirewallRules] = useState<ParsedRule[]>([]);
   const [pingEvent, setPingEvent] = useState<PingEvent | null>(null);
-  const [chatResetKey, setChatResetKey] = useState(0);
+  // Chat conversation lives here, not in ChatPane, so it survives switching the
+  // chat<->console tabs within a session (ChatPane unmounts on tab change; App
+  // does not). The backend keeps its own _conversation_history; this is the UI
+  // mirror. Both are cleared together on lab start/stop/reset and Clear.
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatLoading, setChatLoading] = useState(false);
   const pingIdRef = useRef(0);
 
   const pollHealth = useCallback(async () => {
@@ -106,6 +114,7 @@ export default function App() {
     try {
       await startLab(scenario);
       await pollHealth();
+      setChatMessages([]); // backend clears _conversation_history on start
     } catch (err) {
       setLabError(String(err));
     } finally {
@@ -121,6 +130,7 @@ export default function App() {
       await pollHealth();
       setFirewallRules([]);
       setPingEvent(null);
+      setChatMessages([]); // backend clears _conversation_history on stop
     } catch (err) {
       setLabError(String(err));
     } finally {
@@ -137,7 +147,7 @@ export default function App() {
       await pollHealth();
       setFirewallRules([]);
       setPingEvent(null);
-      setChatResetKey((k) => k + 1);
+      setChatMessages([]); // backend clears _conversation_history on reset
     } catch (err) {
       setLabError(String(err));
     } finally {
@@ -162,6 +172,37 @@ export default function App() {
   );
 
   const handlePingEventComplete = useCallback(() => setPingEvent(null), []);
+
+  // Send lives here (not in ChatPane) so an in-flight ~50s request still lands
+  // its response if the user switches to the console tab and back while waiting.
+  const sendChatMessage = useCallback(
+    async (text: string) => {
+      setChatMessages((prev) => [...prev, { role: "user", content: text }]);
+      setChatLoading(true);
+      try {
+        const resp = await sendChat(text, model);
+        handleChatComplete(resp.tool_calls);
+        setChatMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: resp.response || "", toolCalls: resp.tool_calls, metrics: resp.metrics },
+        ]);
+      } catch (err) {
+        setChatMessages((prev) => [...prev, { role: "assistant", content: "", error: String(err) }]);
+      } finally {
+        setChatLoading(false);
+      }
+    },
+    [model, handleChatComplete]
+  );
+
+  const clearChatHistory = useCallback(async () => {
+    try {
+      await clearChat();
+    } catch {
+      /* best-effort */
+    }
+    setChatMessages([]);
+  }, []);
 
   const tabClass = (active: boolean) =>
     `px-3 py-1 text-xs font-medium rounded transition-colors ${
@@ -227,8 +268,10 @@ export default function App() {
           model={model}
           setModel={setModel}
           models={MODELS}
-          chatResetKey={chatResetKey}
-          onChatComplete={handleChatComplete}
+          messages={chatMessages}
+          chatLoading={chatLoading}
+          onSend={sendChatMessage}
+          onClear={clearChatHistory}
         />
       ) : (
         <ConsoleView
