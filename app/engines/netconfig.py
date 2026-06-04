@@ -83,6 +83,42 @@ def disable_ipv6(container: str) -> list[str]:
     return warnings
 
 
+def write_data_plane_hosts(scenario_name: str, scenario: Scenario) -> list[str]:
+    """Point every node name at its DATA-plane IP inside each container's /etc/hosts.
+
+    containerlab/Docker resolve a node name to its MANAGEMENT IP (172.20.20.x),
+    and the mgmt bridge connects all containers directly — so an operator's
+    `ping <name>` in the console goes over mgmt and NEVER traverses the firewall,
+    silently bypassing DROP rules. We append `<data-ip> <name>` lines so name
+    lookups hit the routed data plane instead. nsswitch resolves `files` before
+    `dns`, so these win over the mgmt-IP DNS entries. The block tool already pings
+    data IPs (_node_ip_map); this makes a human's by-name ping match it.
+
+    Best-effort: a node with no L3 interface (a switch) contributes no entry, and
+    a per-container write failure is returned as a warning, never raised.
+    """
+    name_ip: dict[str, str] = {}
+    for node in scenario.nodes:
+        for iface in node.interfaces:
+            if iface.ip:
+                name_ip[node.id] = iface.ip.split("/")[0]
+                break  # primary (first L3) interface, same pick as _node_ip_map
+    if not name_ip:
+        return []
+    block = "\n".join(f"{ip}\t{name}" for name, ip in name_ip.items())
+    # Heredoc append: robust against the embedded newlines/whitespace, works on
+    # busybox (alpine) and debian alike. Containers are fresh per deploy, so
+    # /etc/hosts starts clean — no accumulation across redeploys.
+    append_cmd = f"cat >> /etc/hosts <<'CLAB_DP_HOSTS'\n{block}\nCLAB_DP_HOSTS"
+    warnings: list[str] = []
+    for node in scenario.nodes:
+        container = f"clab-{scenario_name}-{node.id}"
+        r = docker_exec(container, ["sh", "-c", append_cmd])
+        if r.returncode != 0:
+            warnings.append(f"{container}: write data-plane hosts -> {r.stderr.strip()}")
+    return warnings
+
+
 def configure_nodes(scenario_name: str, scenario: Scenario) -> list[str]:
     """Apply per-node L3 config (IP/link/route) + launch PC services.
 
@@ -148,4 +184,7 @@ def configure_nodes(scenario_name: str, scenario: Scenario) -> list[str]:
             rl = launch_service(container, node.launch)
             if rl.returncode != 0:
                 warnings.append(f"{container}: service launch -> {rl.stderr.strip()}")
+    # Final pass: now that every node's data-plane IP is up, point node names at
+    # those IPs so console `ping <name>` traverses the firewall (not mgmt).
+    warnings.extend(write_data_plane_hosts(scenario_name, scenario))
     return warnings
