@@ -61,8 +61,10 @@ def build_system_prompt(
     else:
         node_descriptions = []
         for n in scenario.nodes:
-            ips = ", ".join(iface.ip for iface in n.interfaces)
-            node_descriptions.append(f"{n.id} ({n.role}, {ips})")
+            # L2 nodes (switches) have interfaces with no IP — skip the Nones.
+            ips = ", ".join(iface.ip for iface in n.interfaces if iface.ip)
+            descr = f"{n.id} ({n.role}, {ips})" if ips else f"{n.id} ({n.role}, L2/no IP)"
+            node_descriptions.append(descr)
         nodes_line = (
             f"Current scenario '{scenario.name}' has these nodes: "
             + "; ".join(node_descriptions)
