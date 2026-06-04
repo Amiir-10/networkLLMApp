@@ -1,5 +1,47 @@
 # Demo-2 Implementation — Findings
 
+## 2026-06-04 #2 — Root-cause confirmation of the 3 testing-pass bugs (systematic-debugging, before any fix)
+
+Deployed both scenarios fresh via the backend (`POST /lab/start`, so `configure_nodes` runs). Evidence:
+
+### Bug #1 (IPv6 "still enabled") — NODE IPv6 IS ALREADY DEAD; only the mgmt network still declares IPv6
+- `ip -6 addr` is **empty on all 13 nodes** of `two-subnet-ixp` AND all 5 of `central-hub`.
+- Race test: an `alpine` container on the `clab` net with ONLY the creation-time `disable_ipv6`
+  sysctls (no runtime flush) gets eth0 = IPv4-only, `GlobalIPv6=invalid IP`. So the
+  topology-generator sysctls **alone** already prevent mgmt eth0 IPv6 — the runtime flush is redundant.
+- The ONLY residual IPv6: the containerlab **default mgmt network** `clab` is created with
+  `EnableIPv6=true`, subnet `3fff:172:20:20::/64`. The generated `*.clab.yml` emits **no `mgmt:` block**,
+  so containerlab uses its IPv6-enabled default. No container uses the v6 subnet (sysctls kill it).
+- ⇒ Amir's "ping by name over IPv6" does NOT reproduce in current code. The topology-generator-level
+  hardening that matches his standing rule = add a `mgmt:` block that disables IPv6 on the network,
+  removing the latent `3fff:` subnet entirely.
+
+### Bug #2 (block bypassed in console) — CONFIRMED: management-network bypass, NOT IPv6
+- Container names resolve via Docker embedded DNS (127.0.0.11) / clab `/etc/hosts` to the **mgmt IPv4**
+  (`172.20.20.x`). containerlab only knows mgmt IPs; data-plane IPs are added post-deploy by netconfig,
+  so nothing maps a name → data IP.
+- The mgmt bridge connects every container directly and **never traverses the firewall**.
+- Proof on `central-hub` with DROP pc1→pc2 active:
+  - `ping 10.99.20.10` (data IP, crosses fw) → **100% loss (BLOCKED)** ✓
+  - `ping pc2` (→ mgmt 172.20.20.6) → **0% loss (BYPASS)**, 0.05ms (direct bridge)
+- ⇒ Killing IPv6 will NOT fix this — by-name would just use mgmt IPv4 and still bypass. The note's
+  "disabling IPv6 is enough for #2" is WRONG. Real fix is a design call (make names resolve to
+  data-plane IPs so console-by-name traverses the fw, vs. accept console verification uses data IPs).
+- Note: the `ping_test` TOOL already pings the data IP (`_node_ip_map`), so the LLM/tool path is correct
+  and was verified working; only a human typing `ping <name>` in the console PTY hits the bypass.
+
+### Bug #3 (chat wiped on console↔chat nav) — CONFIRMED: frontend unmount, no rehydrate
+- `App.tsx` renders `<ChatView>` only when `view==="chat"`; switching tabs **unmounts** ChatView→ChatPane.
+- `ChatPane` holds `messages` in local `useState([])`; remount re-inits to empty, no rehydrate on mount.
+- Navigation never calls `/chat/reset` (only the Clear button + lab Reset do). Backend
+  `_conversation_history` survives. No GET-history endpoint exists.
+- Fix options: (a) lift `messages` into `App` (survives tab nav, no backend change), or
+  (b) add `GET /chat/history` + rehydrate on mount (also survives a page reload; needs tool_calls/metrics
+  shape mapping).
+
+---
+
+
 ## advisor tool — corrected diagnosis (2026-05-31 #2)
 Earlier this session it LOOKED like calling `advisor()` killed the agent. Root-cause review of the
 transcript shows the opposite: **`advisor()` was never actually emitted.** Each "advisor" turn ended
