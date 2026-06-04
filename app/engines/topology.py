@@ -19,6 +19,16 @@ from app.engines import netconfig
 
 CONTAINERLAB_BIN = "/home/amir/.local/bin/containerlab"
 
+# Management network, pinned at the topology-generator level. containerlab's
+# default mgmt network ("clab", 172.20.20.0/24) is auto-created with IPv6 ON
+# (EnableIPv6=true, 3fff:172:20:20::/64). Per the standing rule (IPv6 disabled
+# everywhere, enforced at the generator), we emit an explicit mgmt block with an
+# ipv4-subnet and NO ipv6-subnet — containerlab then creates the network with
+# EnableIPv6=false, so no node ever gets an IPv6 mgmt address. Name + subnet
+# match containerlab's own defaults, so mgmt IPs are unchanged.
+MGMT_NETWORK = "clab"
+MGMT_IPV4_SUBNET = "172.20.20.0/24"
+
 
 class LabAlreadyRunning(Exception):
     pass
@@ -86,7 +96,13 @@ class TopologyEngine:
                 topology["links"].append(
                     {"endpoints": [f"{node.id}:eth{a_idx}", f"{iface.to}:eth{b_idx}"]}
                 )
-        return {"name": scenario.name, "topology": topology}
+        return {
+            "name": scenario.name,
+            # ipv4-subnet only (no ipv6-subnet) → containerlab disables IPv6 on
+            # the mgmt network. See MGMT_* note above.
+            "mgmt": {"network": MGMT_NETWORK, "ipv4-subnet": MGMT_IPV4_SUBNET},
+            "topology": topology,
+        }
 
     def _clab(self, args: list[str], timeout: int) -> subprocess.CompletedProcess:
         return subprocess.run(
