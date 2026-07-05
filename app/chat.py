@@ -15,7 +15,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "block_traffic",
-            "description": "Block traffic between two nodes. Adds a firewall DROP rule. For a specific service set proto=tcp|udp and port (e.g. block web traffic = proto tcp, port 80; postgres = proto tcp, port 5432).",
+            "description": "Block traffic between two nodes. Adds a firewall DROP rule. For a specific service set proto=tcp|udp and port. Known services in this lab: HTTP/web = proto tcp, port 80; HTTPS = proto tcp, port 443; PostgreSQL/database = proto tcp, port 5432; the UDP echo service = proto udp, port 9999. Use proto=icmp (no port) for ping.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -135,17 +135,22 @@ def _node_ip_map(scenario: Scenario) -> dict[str, str]:
     return result
 
 
-def call_ollama(model: str, messages: list[dict]) -> dict:
+def call_ollama(model: str, messages: list[dict], options: dict | None = None) -> dict:
     # 120s, not 60s: a cold model load (first call after the backend or Ollama
     # starts) can push the first response past 60s and trip the timeout even
     # though the request is fine. Subsequent calls are fast.
+    payload = {
+        "model": model,
+        "messages": messages,
+        "tools": TOOLS,
+        "stream": False,
+    }
+    # Ollama sampling options (temperature, seed, ...). The experiment runner
+    # fixes temperature=0 so repetitions measure the model, not the sampler.
+    if options:
+        payload["options"] = options
     with httpx.Client(timeout=120.0) as client:
-        resp = client.post(OLLAMA_URL, json={
-            "model": model,
-            "messages": messages,
-            "tools": TOOLS,
-            "stream": False,
-        })
+        resp = client.post(OLLAMA_URL, json=payload)
         resp.raise_for_status()
         return resp.json()
 

@@ -1,0 +1,25 @@
+# S1 baseline sequence (D A D U D) — Methodology-Brainstorm-2026-06-12 §2.
+# The mutation pair pc1a->pc1b is cross-site (subnet A -> subnet B) on purpose:
+# same-subnet traffic never crosses the firewall in two-subnet-ixp, so a
+# same-subnet block would be unmeasurable.
+id: s1-baseline-llama31
+scenario: two-subnet-ixp
+model: llama3.1:8b
+repetitions: 2
+options:
+  temperature: 0.0
+sequence:
+  - kind: D
+    prompt: "Which firewall rules are currently active?"
+  - kind: A
+    prompt: "Block ping from pc1a to pc1b"
+    expect: { unreachable: [[pc1a, pc1b]] }
+    minimal_rules: 1
+  - kind: D
+    prompt: "Which firewall rules are currently active?"
+  - kind: U
+    prompt: "Unblock ping from pc1a to pc1b"
+    expect: { unreachable: [] }
+    minimal_rules: 0
+  - kind: D
+    prompt: "Which firewall rules are currently active?"

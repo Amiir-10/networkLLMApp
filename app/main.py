@@ -227,6 +227,19 @@ def get_rules() -> dict:
     return security.list_rules()
 
 
+@app.post("/rules/flush")
+def flush_rules() -> dict:
+    """Deterministic clean-slate for the rule set (no LLM in the loop).
+
+    Same engine method the LLM's flush_rules tool dispatches to — the
+    experiment runner uses this between repetitions so every rep starts from
+    an identical firewall state without paying for a full lab redeploy.
+    """
+    if not security.connected:
+        raise HTTPException(status_code=400, detail="Firewall driver not connected.")
+    return {"status": "flushed", "result": security.flush()}
+
+
 class RuleRequest(BaseModel):
     src: str
     dst: str
@@ -392,6 +405,10 @@ async def console_ws(websocket: WebSocket, scenario_name: str, node: str) -> Non
 class ChatRequest(BaseModel):
     message: str
     model: str = "llama3.1:8b"
+    # Ollama sampling options (temperature, seed, ...) — used by the experiment
+    # runner to fix temperature across repetitions. None = Ollama defaults,
+    # so GUI behavior is unchanged.
+    options: dict | None = None
 
 
 @app.post("/chat/reset")
@@ -440,7 +457,7 @@ def chat(req: ChatRequest) -> dict:
         interaction = metrics.start_interaction(req.model, req.message)
 
         try:
-            ollama_resp = call_ollama(req.model, messages)
+            ollama_resp = call_ollama(req.model, messages, req.options)
         except Exception as e:
             # Roll back the user turn appended above. A failed call (e.g. a
             # cold-start timeout) must not leave a dangling user message in the

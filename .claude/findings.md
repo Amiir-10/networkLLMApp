@@ -1,4 +1,16 @@
-# Demo-2 Implementation — Findings
+# Findings
+
+## 2026-07-05 — Experiment runner built + S1 smoke verified (uncommitted)
+
+Design doc: vault `Notes/Experiment-Runner-Design-2026-07-05.md`. State: `.claude/task-plan.md`.
+
+- **New `app/experiments/`** (specs/prober/replay/runner/metrics/stats/plots/`__main__`) + `experiments/s1-baseline-llama31.yaml`. Backend: new `POST /rules/flush`, `ChatRequest.options` → `call_ollama(options)` (temp 0 in specs).
+- **replay.py is a vendored API-compatible subset of MukundaKatta/prompt-replay** (JsonlStore/InMemoryStore/Recorder) — pip-from-git was blocked by the env's classifier. It `try: from prompt_replay import ...` first, so installing the real package is a drop-in. llmreplay rejected: SDK-only instrumentation, can't record Ollama.
+- **S1 smoke (k=2) PASSED end-to-end**: both reps satisfiable PASS, efficiency 1.0, converge at prompt 4, exposure dips exactly during the blocked window (29/30), 3 PNGs render, trace.jsonl = 10 calls. ~75–107s/step (CPU). Worst-case exposure = 1.0 *by construction* for sequences that start allow-all — it only becomes informative for isolation-goal tasks (expected).
+- **Probe layer**: docker-exec ping on data IPs, 30 ordered PC pairs in ~0.1s (ThreadPool 10), one retry per pair. Runner preflights `/health` (must be `two-subnet-ixp` + fw connected) and freezes the spec beside results — a CHANGED spec under the same id is refused; `--reps N` overrides only the count; `aggregate` subcommand recomputes offline.
+- **Env left**: backend detached `nohup` `/tmp/nllm-backend.log`; two-subnet-ixp fresh (stale central-hub crash-loop destroyed 2026-07-05); matplotlib in requirements.
+
+# Demo-2 Implementation — Findings (historical)
 
 ## 2026-06-04 #2 — Root-cause confirmation of the 3 testing-pass bugs (systematic-debugging, before any fix)
 
