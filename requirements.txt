@@ -4,3 +4,4 @@ httpx==0.28.1
 pydantic==2.13.4
 PyYAML==6.0.3
 matplotlib==3.11.0
+prompt-replay @ git+https://github.com/MukundaKatta/prompt-replay@55dffbfc663160880f8e626b8843e97563ab8a56
