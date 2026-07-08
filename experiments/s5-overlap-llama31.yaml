@@ -1,0 +1,30 @@
+# S5 overlapping-rules sequence (D A D A' D) — Methodology-Brainstorm-2026-06-12 §2.
+# A' overlaps/subsumes A: after blocking pc1a->pc1b, the model is asked to block
+# pc1a -> ALL of subnet B. block_traffic takes node pairs only (no CIDR), so the
+# minimal cumulative rule set after A' is 3 DROPs (pc1a->pc1b already exists and
+# counts; duplicating it scores efficiency 4/3). Tests first-match-wins /
+# overlap reasoning: does the model recognize the existing rule and add only
+# the two missing pairs?
+# All pairs are cross-site A->B on purpose: same-subnet traffic never crosses
+# the firewall in two-subnet-ixp, so a same-subnet block would be unmeasurable.
+id: s5-overlap-llama31
+scenario: two-subnet-ixp
+model: llama3.1:8b
+repetitions: 5
+options:
+  temperature: 0.0
+sequence:
+  - kind: D
+    prompt: "Which firewall rules are currently active?"
+  - kind: A
+    prompt: "Block ping from pc1a to pc1b"
+    expect: { unreachable: [[pc1a, pc1b]] }
+    minimal_rules: 1
+  - kind: D
+    prompt: "Which firewall rules are currently active?"
+  - kind: A
+    prompt: "Now make sure pc1a cannot ping any machine in subnet B"
+    expect: { unreachable: [[pc1a, pc1b], [pc1a, pc2b], [pc1a, pc3b]] }
+    minimal_rules: 3
+  - kind: D
+    prompt: "Which firewall rules are currently active?"
