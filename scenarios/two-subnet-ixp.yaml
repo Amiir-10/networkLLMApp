@@ -3,25 +3,29 @@ description: >-
   Two mirror enterprise subnets peering through an ISP-style internet exchange.
   Each subnet: 3 PCs on a LAN (10.10.1.0/24 and 10.20.1.0/24) behind an L2 switch,
   an internal firewalld firewall, and an edge router. The two routers peer over a
-  shared IXP fabric (100.64.0.0/24). pc1/pc2 run real nginx (TCP 80); pc3 runs real
-  PostgreSQL (TCP 5432). Cross-subnet traffic routes PC -> switch -> firewall ->
-  router -> IXP -> router -> firewall -> switch -> PC.
+  shared IXP fabric (100.64.0.0/24). pc1/pc2 run a real web host serving HTTP
+  (TCP 80) AND HTTPS (TCP 443, self-signed TLS) plus a UDP echo service (UDP 9999);
+  pc3 runs real PostgreSQL (TCP 5432). Cross-subnet traffic routes PC -> switch ->
+  firewall -> router -> IXP -> router -> firewall -> switch -> PC, so every block
+  demoed here must be an A<->B pair (intra-subnet traffic never touches a firewall).
 
 nodes:
   # ── Subnet A ────────────────────────────────────────────────────────────
   - id: pc1a
     role: pc
-    image: nginx:alpine
-    idle: false
-    ports: [80]
+    image: weblab:latest
+    idle: false          # nginx (HTTP 80 + HTTPS 443) runs as PID 1
+    ports: [80, 443, 9999]
+    launch: "socat UDP-LISTEN:9999,fork,reuseaddr EXEC:/bin/cat"   # persistent UDP echo
     interfaces:
       - {to: switcha, ip: 10.10.1.11/24, gateway: 10.10.1.1}
 
   - id: pc2a
     role: pc
-    image: nginx:alpine
+    image: weblab:latest
     idle: false
-    ports: [80]
+    ports: [80, 443, 9999]
+    launch: "socat UDP-LISTEN:9999,fork,reuseaddr EXEC:/bin/cat"
     interfaces:
       - {to: switcha, ip: 10.10.1.12/24, gateway: 10.10.1.1}
 
@@ -98,17 +102,19 @@ nodes:
 
   - id: pc1b
     role: pc
-    image: nginx:alpine
-    idle: false
-    ports: [80]
+    image: weblab:latest
+    idle: false          # nginx (HTTP 80 + HTTPS 443) runs as PID 1
+    ports: [80, 443, 9999]
+    launch: "socat UDP-LISTEN:9999,fork,reuseaddr EXEC:/bin/cat"   # persistent UDP echo
     interfaces:
       - {to: switchb, ip: 10.20.1.11/24, gateway: 10.20.1.1}
 
   - id: pc2b
     role: pc
-    image: nginx:alpine
+    image: weblab:latest
     idle: false
-    ports: [80]
+    ports: [80, 443, 9999]
+    launch: "socat UDP-LISTEN:9999,fork,reuseaddr EXEC:/bin/cat"
     interfaces:
       - {to: switchb, ip: 10.20.1.12/24, gateway: 10.20.1.1}
 

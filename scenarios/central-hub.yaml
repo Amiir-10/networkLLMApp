@@ -1,20 +1,22 @@
 name: central-hub
-description: Three PCs on three LAN subnets (10.99.10/20/30.0/24) and an edge router on a WAN subnet (203.0.113.0/24, TEST-NET-3), all centrally routed through a firewalld-managed firewall. pc1/pc2 run real nginx web servers (TCP 80); pc3 runs a real PostgreSQL (TCP 5432).
+description: Three PCs on three LAN subnets (10.99.10/20/30.0/24) and an edge router on a WAN subnet (203.0.113.0/24, TEST-NET-3), all centrally routed through a firewalld-managed firewall. pc1/pc2 run a real web host serving HTTP (TCP 80) AND HTTPS (TCP 443, self-signed TLS) plus a UDP echo service (UDP 9999); pc3 runs a real PostgreSQL (TCP 5432). Every PC is on its own subnet, so PC<->PC traffic always crosses the single firewall (no cross-site caveat needed here).
 
 nodes:
   - id: pc1
     role: pc
-    image: nginx:alpine
-    idle: false          # nginx runs as PID 1 (CMD: nginx -g 'daemon off;')
-    ports: [80]
+    image: weblab:latest
+    idle: false          # nginx (HTTP 80 + HTTPS 443) runs as PID 1
+    ports: [80, 443, 9999]
+    launch: "socat UDP-LISTEN:9999,fork,reuseaddr EXEC:/bin/cat"   # persistent UDP echo
     interfaces:
       - {to: fw, ip: 10.99.10.10/24, gateway: 10.99.10.1}
 
   - id: pc2
     role: pc
-    image: nginx:alpine
+    image: weblab:latest
     idle: false
-    ports: [80]
+    ports: [80, 443, 9999]
+    launch: "socat UDP-LISTEN:9999,fork,reuseaddr EXEC:/bin/cat"
     interfaces:
       - {to: fw, ip: 10.99.20.10/24, gateway: 10.99.20.1}
 
