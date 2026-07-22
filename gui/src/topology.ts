@@ -41,10 +41,11 @@ export interface BuiltTopology {
   pathNodes: (src: string, dst: string) => string[];
 }
 
-const NODE_W = 104;
-const NODE_H = 76;
-const CLOUD_PAD = 30;
-const CLOUD_LABEL_H = 16;
+const NODE_W = 150;
+const NODE_H = 96;
+const CLOUD_PAD = 32;
+const CLOUD_LABEL_H = 20;
+const MIN_CLOUD_MEMBERS = 3;
 
 // ── IPv4 helpers ───────────────────────────────────────────────────────────
 function ipToInt(ip: string): number {
@@ -113,12 +114,42 @@ export function buildTopology(graph: ScenarioGraph): BuiltTopology {
     }
   }
 
-  // ── Layout (dagre, left-to-right) ─────────────────────────────────────────
+  // ── Layout (dagre) ────────────────────────────────────────────────────────
+  // Dagre ranks flow source → target, and edge direction here comes from YAML
+  // interface listing order — arbitrary. With a SINGLE gateway firewall the
+  // topology is a hierarchy (WAN → firewall → LANs), so orient edges by role
+  // rank and lay it out left-to-right: router — firewall — hosts (central-hub
+  // previously drew the firewall leftmost with the router stacked among the
+  // PCs). Multi-firewall topologies (two-subnet-ixp: two peer sites around an
+  // IXP) have no such hierarchy — role orientation would unmirror the two
+  // sites, so they keep the natural edge order, but lay out TOP-TO-BOTTOM:
+  // the ranks (site A hosts / site A edge / IXP / site B edge / site B hosts)
+  // then stack vertically, which matches the tall topology pane and renders
+  // far larger under fitView than the previous ultra-wide LR strip.
+  const ROLE_RANK: Record<string, number> = { router: 0, firewall: 1, switch: 2, pc: 3 };
+  const singleFirewall = nodes.filter((n) => n.role === "firewall").length === 1;
   const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: "LR", nodesep: 36, ranksep: 96, marginx: 40, marginy: 40 });
+  g.setGraph(
+    singleFirewall
+      ? { rankdir: "LR", nodesep: 44, ranksep: 110, marginx: 40, marginy: 40 }
+      : { rankdir: "TB", nodesep: 52, ranksep: 32, marginx: 24, marginy: 24 }
+  );
   g.setDefaultEdgeLabel(() => ({}));
   for (const n of nodes) g.setNode(n.id, { width: NODE_W, height: NODE_H });
-  for (const [a, b] of links) g.setEdge(a, b);
+  // Edges that cross a cloud boundary (endpoints belong to different drawn
+  // subnets) get an extra rank of separation, so adjacent cloud rectangles
+  // (LAN ↔ IXP in two-subnet-ixp) don't overlap each other or each other's
+  // labels — ranksep alone is smaller than two cloud paddings.
+  const cloudsOf = (id: string) =>
+    [...subnets].filter(([, m]) => m.size >= MIN_CLOUD_MEMBERS && m.has(id))
+      .map(([cidr]) => cidr).sort().join(",");
+  for (const [a, b] of links) {
+    const minlen = cloudsOf(a) !== cloudsOf(b) ? 3 : 1;
+    const flip =
+      singleFirewall && (ROLE_RANK[byId[b].role] ?? 9) < (ROLE_RANK[byId[a].role] ?? 9);
+    if (flip) g.setEdge(b, a, { minlen });
+    else g.setEdge(a, b, { minlen });
+  }
   dagre.layout(g);
 
   const pos: Record<string, { x: number; y: number }> = {};
@@ -149,7 +180,6 @@ export function buildTopology(graph: ScenarioGraph): BuiltTopology {
   // on every subnet, would be wrapped in a bubble per neighbour ("a cloud per
   // device"). E.g. central-hub's PCs are each on their own /24, so it gets no
   // clouds; two-subnet-ixp gets LAN-A, LAN-B and the IXP.
-  const MIN_CLOUD_MEMBERS = 3;
   const cloudNodes: Node<CloudNodeData>[] = [];
   for (const [cidr, members] of subnets) {
     const ids = [...members].filter((id) => pos[id]);

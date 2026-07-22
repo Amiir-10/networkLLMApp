@@ -136,9 +136,11 @@ def _node_ip_map(scenario: Scenario) -> dict[str, str]:
 
 
 def call_ollama(model: str, messages: list[dict], options: dict | None = None) -> dict:
-    # 120s, not 60s: a cold model load (first call after the backend or Ollama
-    # starts) can push the first response past 60s and trip the timeout even
-    # though the request is fine. Subsequent calls are fast.
+    # 300s: on CPU Ollama a single tool-round has been measured at ~120s
+    # (2026-07-11, warm model, leftover containers on the box) — the old 120s
+    # cap sat exactly on that line, so a cold load or a busy machine tripped
+    # it and the GUI surfaced an opaque error. The experiment runner records
+    # per-step wall time itself, so a generous cap costs nothing.
     payload = {
         "model": model,
         "messages": messages,
@@ -149,7 +151,7 @@ def call_ollama(model: str, messages: list[dict], options: dict | None = None) -
     # fixes temperature=0 so repetitions measure the model, not the sampler.
     if options:
         payload["options"] = options
-    with httpx.Client(timeout=120.0) as client:
+    with httpx.Client(timeout=300.0) as client:
         resp = client.post(OLLAMA_URL, json=payload)
         resp.raise_for_status()
         return resp.json()

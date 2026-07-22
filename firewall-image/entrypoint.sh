@@ -2,6 +2,11 @@
 set -e
 
 mkdir -p /run/dbus
+# A restarted container keeps its writable layer, so the previous run's pid
+# file survives — dbus-daemon then refuses to start, PID 1 exits (set -e) and
+# docker's restart policy loops the container forever (the post-reboot
+# fwa/fwb crash-loop). Clean slate on every boot.
+rm -f /run/dbus/pid /run/dbus/system_bus_socket
 dbus-daemon --system --fork
 
 sleep 1

@@ -10,6 +10,7 @@ data/experiments/<spec-id>/
 ├── spec.yaml          frozen copy of the spec that produced these results
 ├── trace.jsonl        prompt-replay record of every /chat call
 ├── reps/rep-<n>.json  per-repetition step records + computed metrics
+├── transcripts/*.md   readable per-rep LLM conversation transcripts
 ├── aggregate.json     stats over all complete reps (recomputed every run)
 └── plots/*.png        regenerated every run
 """
@@ -28,6 +29,7 @@ from app.experiments.prober import pc_ips, probe_matrix
 from app.experiments.replay import JsonlStore, Recorder
 from app.experiments.specs import ExperimentSpec
 from app.experiments.stats import summarize, wilson
+from app.experiments.transcripts import render_rep_markdown, write_transcripts
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 EXPERIMENTS_DATA = REPO_ROOT / "data" / "experiments"
@@ -159,6 +161,9 @@ class ExperimentRunner:
             "metrics": compute_rep_metrics(self.spec, self.pcs, step_records),
         }
         rep_file.write_text(json.dumps(rep, indent=1, default=str))
+        transcript = self.out_dir / "transcripts" / f"rep-{rep_no}.md"
+        transcript.parent.mkdir(parents=True, exist_ok=True)
+        transcript.write_text(render_rep_markdown(self.spec, rep))
         return rep
 
     def run(self) -> dict:
@@ -200,4 +205,7 @@ class ExperimentRunner:
         (self.out_dir / "aggregate.json").write_text(json.dumps(agg, indent=1))
         step_kinds = [s.kind for s in self.spec.sequence]
         plots.render_all(reps, step_kinds, agg, self.out_dir / "plots")
+        # Readable LLM-output transcripts (supervisor request) — regenerated
+        # from the rep JSONs, so `aggregate` also backfills old experiments.
+        write_transcripts(self.spec, self.out_dir)
         return agg

@@ -1,11 +1,13 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import {
   ReactFlow,
+  ReactFlowProvider,
   Background,
   Controls,
   Handle,
   Position,
   useNodesState,
+  useReactFlow,
   type Node,
   type Edge,
   type NodeProps,
@@ -20,7 +22,7 @@ import type { ParsedRule, PingEvent } from "../api";
 
 function PcIcon() {
   return (
-    <svg width="36" height="32" viewBox="0 0 36 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <svg width="54" height="48" viewBox="0 0 36 32" fill="none" xmlns="http://www.w3.org/2000/svg">
       <rect x="2" y="1" width="32" height="22" rx="2" stroke="#64748b" strokeWidth="2" fill="#f8fafc" />
       <rect x="6" y="5" width="24" height="14" rx="1" fill="#e2e8f0" />
       <rect x="13" y="24" width="10" height="3" fill="#94a3b8" />
@@ -31,7 +33,7 @@ function PcIcon() {
 
 function ShieldIcon() {
   return (
-    <svg width="36" height="40" viewBox="0 0 36 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <svg width="50" height="56" viewBox="0 0 36 40" fill="none" xmlns="http://www.w3.org/2000/svg">
       <path d="M18 2 L4 10 L4 22 C4 30 10 36 18 38 C26 36 32 30 32 22 L32 10 Z" stroke="#64748b" strokeWidth="2" fill="#f8fafc" />
       <path d="M18 10 L18 26 M12 18 L24 18" stroke="#94a3b8" strokeWidth="2.5" strokeLinecap="round" />
     </svg>
@@ -40,7 +42,7 @@ function ShieldIcon() {
 
 function RouterIcon() {
   return (
-    <svg width="40" height="32" viewBox="0 0 40 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <svg width="58" height="46" viewBox="0 0 40 32" fill="none" xmlns="http://www.w3.org/2000/svg">
       <rect x="2" y="14" width="36" height="14" rx="2" stroke="#64748b" strokeWidth="2" fill="#f8fafc" />
       <circle cx="8" cy="21" r="1.5" fill="#22c55e" />
       <circle cx="14" cy="21" r="1.5" fill="#22c55e" />
@@ -54,7 +56,7 @@ function RouterIcon() {
 
 function SwitchIcon() {
   return (
-    <svg width="40" height="28" viewBox="0 0 40 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <svg width="58" height="40" viewBox="0 0 40 28" fill="none" xmlns="http://www.w3.org/2000/svg">
       <rect x="2" y="8" width="36" height="14" rx="2" stroke="#64748b" strokeWidth="2" fill="#f8fafc" />
       <path d="M9 12 L13 12 M9 18 L13 18 M18 12 L22 12 M18 18 L22 18 M27 12 L31 12 M27 18 L31 18" stroke="#94a3b8" strokeWidth="1.6" strokeLinecap="round" />
       <path d="M6 8 L10 4 M16 8 L20 4 M26 8 L30 4" stroke="#cbd5e1" strokeWidth="1.2" strokeLinecap="round" />
@@ -87,7 +89,7 @@ function CloudNode({ data }: NodeProps) {
       className="w-full h-full rounded-2xl border-2 border-dashed border-sky-300/70 bg-sky-50/40 pointer-events-none"
       style={{ boxSizing: "border-box" }}
     >
-      <span className="absolute top-1 left-3 text-[10px] font-mono font-semibold text-sky-500/80 tracking-wide">
+      <span className="absolute top-1.5 left-3 text-xs font-mono font-semibold text-sky-500/80 tracking-wide">
         {label}
       </span>
     </div>
@@ -122,24 +124,24 @@ function DeviceNode({ data }: NodeProps) {
       <Handle id="bs" type="source" position={Position.Bottom} style={handleStyle} />
       <Handle id="ls" type="source" position={Position.Left} style={handleStyle} />
       {icon}
-      <span className="text-xs font-semibold text-gray-700">{label}</span>
-      {ip && <span className="text-[10px] text-gray-400 font-mono">{ip}</span>}
+      <span className="text-lg font-semibold text-gray-700">{label}</span>
+      {ip && <span className="text-sm text-gray-400 font-mono">{ip}</span>}
 
       {myDrops.length > 0 && (
         <div
           className="absolute top-full left-1/2 -translate-x-1/2 mt-2 flex flex-col gap-1 items-center pointer-events-none"
           style={{ zIndex: 5 }}
         >
-          <span className="text-[9px] uppercase tracking-wide text-red-600/70 font-semibold">Active DROP</span>
+          <span className="text-[11px] uppercase tracking-wide text-red-600/70 font-semibold">Active DROP</span>
           {myDrops.slice(0, 6).map((r) => (
             <div
               key={r.raw}
-              className="px-1.5 py-0.5 bg-red-50 border border-red-300 text-red-700 rounded text-[10px] font-mono whitespace-nowrap shadow-sm"
+              className="px-2 py-0.5 bg-red-50 border border-red-300 text-red-700 rounded text-xs font-mono whitespace-nowrap shadow-sm"
             >
               {ruleChipLabel(r, ipMap)}
             </div>
           ))}
-          {myDrops.length > 6 && <span className="text-[9px] text-red-500">+{myDrops.length - 6} more</span>}
+          {myDrops.length > 6 && <span className="text-[11px] text-red-500">+{myDrops.length - 6} more</span>}
         </div>
       )}
     </div>
@@ -214,7 +216,15 @@ interface Props {
   onNodeClick?: (nodeId: string) => void;
 }
 
-export default function TopologyPane({
+export default function TopologyPane(props: Props) {
+  return (
+    <ReactFlowProvider>
+      <TopologyPaneInner {...props} />
+    </ReactFlowProvider>
+  );
+}
+
+function TopologyPaneInner({
   topology,
   labReady,
   dropRules,
@@ -224,6 +234,7 @@ export default function TopologyPane({
 }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [highlights, setHighlights] = useState<Record<string, WireHighlight>>({});
+  const { fitView } = useReactFlow();
 
   // Rebuild RF nodes when the scenario (topology) changes. Clouds first (low z),
   // then device nodes on top.
@@ -233,7 +244,15 @@ export default function TopologyPane({
       return;
     }
     setNodes([...topology.cloudNodes, ...topology.deviceNodes] as Node[]);
-  }, [topology, setNodes]);
+    // The fitView PROP only applies on mount — switching scenarios keeps the
+    // old viewport, which crops a graph with a different extent (vertical
+    // two-subnet-ixp after horizontal central-hub). Re-fit once React Flow
+    // has rendered the new nodes (double rAF: state commit, then layout).
+    const raf = requestAnimationFrame(() => {
+      requestAnimationFrame(() => fitView({ padding: 0.1, maxZoom: 1.25 }));
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [topology, setNodes, fitView]);
 
   // Ping animation: highlight every wire on the BFS path in sequence. If blocked,
   // stop at (and mark) the wire arriving at the first firewall on the path.
@@ -294,7 +313,7 @@ export default function TopologyPane({
                 nodeTypes={nodeTypes}
                 edgeTypes={edgeTypes}
                 fitView
-                fitViewOptions={{ padding: 0.2 }}
+                fitViewOptions={{ padding: 0.1, maxZoom: 1.25 }}
                 nodesDraggable={true}
                 nodesConnectable={false}
                 elementsSelectable={true}

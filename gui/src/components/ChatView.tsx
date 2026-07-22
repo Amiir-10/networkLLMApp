@@ -18,7 +18,7 @@ interface Props {
   onClear: () => void;
 }
 
-// The chat workspace: live topology on the left, LLM chat on the right.
+// The chat workspace: live topology on the left (60%), LLM chat on the right.
 export default function ChatView({
   topology,
   labReady,
@@ -35,7 +35,7 @@ export default function ChatView({
 }: Props) {
   return (
     <div className="flex-1 flex min-h-0">
-      <div className="w-1/2 border-r border-gray-200 flex flex-col min-h-0">
+      <div className="w-[60%] border-r border-gray-200 flex flex-col min-h-0">
         <div className="px-4 py-2 border-b border-gray-200">
           <h2 className="text-sm font-semibold text-gray-700">Network Topology</h2>
         </div>
@@ -50,7 +50,7 @@ export default function ChatView({
         </div>
       </div>
 
-      <div className="w-1/2 flex flex-col min-h-0">
+      <div className="w-[40%] flex flex-col min-h-0">
         <div className="px-4 py-2 border-b border-gray-200 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-gray-700">Chat</h2>
           <select

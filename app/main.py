@@ -10,8 +10,9 @@ import time
 from pathlib import Path
 
 import yaml
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.engines.topology import TopologyEngine, LabAlreadyRunning, LabNotFound
@@ -26,12 +27,30 @@ SCENARIO_DIR = REPO_ROOT / "scenarios"
 LAB_WORK_DIR = REPO_ROOT / "labs"
 
 app = FastAPI(title="networkLLMApp", version="0.0.5")
+ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    # Starlette's ServerErrorMiddleware sits OUTSIDE CORSMiddleware, so a bare
+    # 500 from an unhandled exception carries no CORS headers and the browser
+    # masks the real error as an opaque "NetworkError". Attach the headers here
+    # so the GUI can display the actual detail.
+    headers = {}
+    origin = request.headers.get("origin")
+    if origin in ALLOWED_ORIGINS:
+        headers["Access-Control-Allow-Origin"] = origin
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"{type(exc).__name__}: {exc}"},
+        headers=headers,
+    )
 topology = TopologyEngine(work_dir=LAB_WORK_DIR)
 security = SecurityEngine()
 metrics = MetricsCollector()
@@ -99,7 +118,27 @@ def lab_start(scenario_name: str) -> dict:
     try:
         result = _deploy_and_connect(scenario, scenario_name)
     except LabAlreadyRunning as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+        if _active_scenario is not None:
+            # A lab this backend actually manages is up — a genuine
+            # double-start, so the 409 is correct.
+            raise HTTPException(status_code=409, detail=str(exc))
+        # Containers exist but this backend knows of no live lab: stale
+        # leftovers from a backend restart or a host reboot (docker's restart
+        # policy resurrects them; the firewalls land in the dbus crash-loop).
+        # Recover the same way run-experiment.sh does — destroy + redeploy,
+        # never restart in place.
+        try:
+            topology.stop(scenario_name)
+        except (LabNotFound, RuntimeError):
+            pass
+        security.disconnect()
+        try:
+            result = _deploy_and_connect(scenario, scenario_name)
+        except LabAlreadyRunning as exc2:
+            raise HTTPException(status_code=409, detail=str(exc2))
+        except RuntimeError as exc2:
+            raise HTTPException(status_code=500, detail=str(exc2))
+        result["recovered_from_stale_lab"] = True
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 

@@ -2,6 +2,7 @@
 # run-experiment.sh — one-command wrapper for the thesis experiment runner.
 #
 # Usage:
+#   ./run-experiment.sh                                               # interactive: topology -> sequence -> reps
 #   ./run-experiment.sh experiments/s1-baseline-llama31.yaml          # run spec.repetitions reps
 #   ./run-experiment.sh experiments/s1-baseline-llama31.yaml 5        # run 5 reps (override)
 #   ./run-experiment.sh --check experiments/s1-baseline-llama31.yaml  # health checks only, no run
@@ -25,8 +26,96 @@ OLLAMA="http://localhost:11434"
 
 CHECK_ONLY=0
 if [[ "${1:-}" == "--check" ]]; then CHECK_ONLY=1; shift; fi
-SPEC="${1:?usage: $0 [--check] <spec.yaml> [reps]}"
-REPS="${2:-}"
+
+# ── Interactive mode: no spec argument → topology → sequence → reps ─────
+# Menu data comes from the spec files themselves (experiments/*.yaml): the
+# topology list is the distinct `scenario` values, because ground truth in a
+# spec is authored against one topology's node names — topology cannot be a
+# free runtime override.
+pick_interactive() {
+    [[ -x "$PY" ]] || { echo "FAIL: venv python not found at $PY"; exit 1; }
+    # TSV per spec: path, scenario, model, default reps, step-kind pattern, reps done.
+    local table
+    table="$("$PY" - <<'EOF'
+import glob, json, pathlib, yaml
+for path in sorted(glob.glob("experiments/*.yaml")):
+    s = yaml.safe_load(open(path))
+    kinds = " ".join(step["kind"] for step in s.get("sequence", []))
+    done = 0
+    for rep in pathlib.Path(f"data/experiments/{s['id']}/reps").glob("rep-*.json"):
+        try:
+            done += bool(json.loads(rep.read_text()).get("complete"))
+        except Exception:
+            pass
+    print("\t".join([path, s["scenario"], s.get("model", "llama3.1:8b"),
+                     str(s.get("repetitions", 3)), kinds, str(done)]))
+EOF
+)"
+    [[ -n "$table" ]] || { echo "FAIL: no spec files found in experiments/"; exit 1; }
+
+    # 1. Topology (skip the question when only one exists).
+    local topos topo
+    mapfile -t topos < <(cut -f2 <<<"$table" | sort -u)
+    if [[ ${#topos[@]} -eq 1 ]]; then
+        topo="${topos[0]}"
+        echo "topology: $topo (only one with specs)"
+    else
+        echo "Topologies with experiment specs:"
+        local i=1; for t in "${topos[@]}"; do echo "  $i) $t"; i=$((i+1)); done
+        local pick
+        while :; do
+            read -rp "Pick topology [1-${#topos[@]}]: " pick
+            [[ "$pick" =~ ^[0-9]+$ && "$pick" -ge 1 && "$pick" -le ${#topos[@]} ]] && break
+        done
+        topo="${topos[$((pick-1))]}"
+    fi
+
+    # 2. Sequence: specs authored for that topology.
+    local rows
+    mapfile -t rows < <(awk -F'\t' -v t="$topo" '$2 == t' <<<"$table")
+    echo "Prompt sequences for '$topo':"
+    local i=1 row
+    for row in "${rows[@]}"; do
+        IFS=$'\t' read -r r_path _ r_model r_reps r_kinds r_done <<<"$row"
+        printf "  %d) %-40s %-12s %-20s (%s reps done)\n" \
+            "$i" "$(basename "$r_path" .yaml)" "$r_kinds" "$r_model" "$r_done"
+        i=$((i+1))
+    done
+    local pick
+    if [[ ${#rows[@]} -eq 1 ]]; then
+        pick=1
+        echo "  -> only one, taking it"
+    else
+        while :; do
+            read -rp "Pick sequence [1-${#rows[@]}]: " pick
+            [[ "$pick" =~ ^[0-9]+$ && "$pick" -ge 1 && "$pick" -le ${#rows[@]} ]] && break
+        done
+    fi
+    local d_path d_reps
+    IFS=$'\t' read -r d_path _ _ d_reps _ _ <<<"${rows[$((pick-1))]}"
+
+    # 3. Iterations (these APPEND to existing reps).
+    local reps_in
+    while :; do
+        read -rp "Repetitions to run now [default ${d_reps}]: " reps_in
+        [[ -z "$reps_in" || ( "$reps_in" =~ ^[0-9]+$ && "$reps_in" -ge 1 ) ]] && break
+    done
+
+    SPEC="$d_path"
+    REPS="$reps_in"
+    local flag=""
+    [[ $CHECK_ONLY == 1 ]] && flag="--check "
+    echo
+    echo "equivalent command: $0 ${flag}${SPEC}${REPS:+ $REPS}"
+    echo
+}
+
+if [[ -z "${1:-}" ]]; then
+    pick_interactive
+else
+    SPEC="$1"
+    REPS="${2:-}"
+fi
 [[ -f "$SPEC" ]] || { echo "FAIL: spec file not found: $SPEC"; exit 1; }
 [[ -x "$PY" ]] || { echo "FAIL: venv python not found at $PY"; exit 1; }
 
