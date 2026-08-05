@@ -27,37 +27,40 @@ vastai ssh-url <INSTANCE_ID>   # -> ssh://root@HOST:PORT
 (Alternative: the "Ollama + WebUI" template from the web UI — also fine; the
 tunnel makes its exposed port/token irrelevant.)
 
-## On the instance (once per rental)
+## Run everything with the MASTER SCRIPT (recommended)
 
-```bash
-ssh -p <PORT> root@<HOST>
-curl -fsSL https://ollama.com/install.sh | sh      # skip if template image
-ollama pull llama3.1:70b                           # ~43 GB, takes a while
-ollama pull qwen2.5-coder:32b                      # ~20 GB
-```
-
-## On your PC
+After renting, only two manual steps remain — fill in the connection file,
+then one command does provisioning + tunnel + run:
 
 ```bash
 cd ~/thesis/networkLLMApp
-cp scripts/vast-instance.env.example scripts/vast-instance.env   # fill HOST/PORT
-sudo systemctl stop ollama            # local Ollama owns 11434 — tunnel can't bind otherwise
-scripts/vast-tunnel.sh                # leave running (auto-reconnects)
-# other terminal:
-curl -s localhost:11434/api/tags      # must list llama3.1:70b etc.
-scripts/healthcheck.sh --model llama3.1:70b
-./run-experiment.sh --check experiments/s1-baseline-llama31-70b.yaml
+cp scripts/vast-instance.env.example scripts/vast-instance.env   # fill HOST/PORT from `vastai ssh-url`
+
+# ALWAYS calibrate first — "GPU = ~10x" is an assumption, not a measurement:
+./experiment.sh --gpu experiments/s1-baseline-llama31-70b.yaml 1
+# note the rep time, then plan the round (reps APPEND):
+./experiment.sh --gpu experiments/s1-baseline-llama31-70b.yaml 5
+./experiment.sh --gpu experiments/s1-baseline-qwen25-32b.yaml 5
 ```
 
-## Run
+`--gpu` automatically: installs Ollama on the instance + pulls the spec's
+model (`scripts/vast-provision-gpu.sh`), stops the local Ollama service to
+free port 11434 (asks for your sudo password), starts the auto-reconnect
+tunnel in the background, waits until the remote model answers, then runs
+with the RAM guard as usual. Nothing is done manually on the instance.
+
+<details>
+<summary>Manual steps (what --gpu does under the hood / fallback)</summary>
 
 ```bash
-# ALWAYS calibrate first — "GPU = ~10x" is an assumption, not a measurement:
+scripts/vast-provision-gpu.sh llama3.1:70b   # install ollama + pull model on the instance
+sudo systemctl stop ollama                   # free local :11434
+scripts/vast-tunnel.sh                       # leave running (auto-reconnects)
+curl -s localhost:11434/api/tags             # must list the model
+./run-experiment.sh --check experiments/s1-baseline-llama31-70b.yaml
 ./run-experiment.sh experiments/s1-baseline-llama31-70b.yaml 1
-# note the rep time, then plan the round:
-./run-experiment.sh experiments/s1-baseline-llama31-70b.yaml 5    # reps APPEND
-./run-experiment.sh experiments/s1-baseline-qwen25-32b.yaml 5
 ```
+</details>
 
 Results land in `data/experiments/<spec-id>/` on your PC as always.
 `--reps N` means N MORE reps, not top-up-to-N. If a run aborts, the partial
@@ -69,7 +72,8 @@ rep is orphaned (excluded from stats) — check `reps/` for `"complete": false`.
 2. `vastai destroy instance <INSTANCE_ID>` — or `vastai stop instance <ID>` ONLY
    if you'll reuse it within days (storage keeps billing; models stay pulled).
 3. `vastai show instances` → confirm gone/stopped.
-4. `sudo systemctl start ollama` — restore local Ollama.
+4. Stop the tunnel: `kill $(cat /tmp/nllm-tunnel.pid)` (harmless if already dead).
+5. `sudo systemctl start ollama` — restore local Ollama.
 
 ## Cost math
 
