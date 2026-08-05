@@ -21,8 +21,9 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO"
 PY="$REPO/.venv/bin/python"
-BACKEND="http://localhost:8000"
-OLLAMA="http://localhost:11434"
+# Env-overridable for remote setups (vast.ai tunnel keeps the defaults).
+BACKEND="${BACKEND:-http://localhost:8000}"
+OLLAMA="${OLLAMA_URL_BASE:-http://localhost:11434}"
 
 CHECK_ONLY=0
 if [[ "${1:-}" == "--check" ]]; then CHECK_ONLY=1; shift; fi
@@ -153,6 +154,23 @@ if ! curl -sf "$BACKEND/health" -o /tmp/nllm-health.json; then
     done
 fi
 echo "ok: backend up on :8000"
+
+# ── 2b. Resource guard ───────────────────────────────────────────────────
+# 2026-08-05: a full lab bring-up (13 containers + backend + Ollama model in
+# RAM) swap-thrashed the laptop to a near-crash (load avg 14). Two layers:
+# refuse to deploy without headroom, and run a watchdog that tears everything
+# down (./shutdown.sh) if free RAM hits critical during deploy/run.
+MIN_FREE_MB="${MIN_FREE_MB:-6000}"
+AVAIL_MB=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)
+if (( AVAIL_MB < MIN_FREE_MB )); then
+    echo "FAIL: only ${AVAIL_MB}MB RAM available; lab deploy needs ${MIN_FREE_MB}MB headroom."
+    echo "      Close apps (browser tabs, editors) and retry, or lower the bar consciously:"
+    echo "      MIN_FREE_MB=4000 $0 $*"
+    exit 1
+fi
+echo "ok: ${AVAIL_MB}MB RAM available (guard threshold ${MIN_FREE_MB}MB)"
+nohup "$REPO/scripts/resource-guard.sh" $$ > /dev/null 2>&1 &
+echo "ok: resource guard armed (auto-teardown below ${CRIT_MB:-1200}MB free; log: /tmp/nllm-resource-guard.log)"
 
 # ── 3. Lab: right scenario deployed + firewall connected ────────────────
 lab_state() { "$PY" - <<'EOF'

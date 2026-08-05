@@ -7,3 +7,4 @@ labs/
 clab-*/
 data/
 .DS_Store
+scripts/vast-instance.env

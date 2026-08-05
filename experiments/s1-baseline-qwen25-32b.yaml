@@ -1,0 +1,24 @@
+# S1 baseline sequence (D A D U D) — qwen2.5-coder:32b (GPU phase, scale curve G17).
+# Requires a GPU host serving Ollama (24 GB+ VRAM; model is ~20 GB Q4).
+# Run via SSH tunnel (Path A) or on a vast.ai VM (Path B) — docs/RUNBOOK-VAST-*.md.
+id: s1-baseline-qwen25-32b
+scenario: two-subnet-ixp
+model: qwen2.5-coder:32b
+repetitions: 5
+options:
+  temperature: 0.0
+sequence:
+  - kind: D
+    prompt: "Which firewall rules are currently active?"
+  - kind: A
+    prompt: "Block ping from pc1a to pc1b"
+    expect: { unreachable: [[pc1a, pc1b]] }
+    minimal_rules: 1
+  - kind: D
+    prompt: "Which firewall rules are currently active?"
+  - kind: U
+    prompt: "Unblock ping from pc1a to pc1b"
+    expect: { unreachable: [] }
+    minimal_rules: 0
+  - kind: D
+    prompt: "Which firewall rules are currently active?"

@@ -8,6 +8,8 @@ is delegated to app.engines.netconfig (the network-config engine).
 Future CRUD verbs (add_node / remove_node / isolate_node) land here.
 """
 import json
+import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Protocol
@@ -17,7 +19,14 @@ import yaml
 from app.lab.models import Scenario
 from app.engines import netconfig
 
-CONTAINERLAB_BIN = "/home/amir/.local/bin/containerlab"
+# Overridable for other hosts (vast.ai VM: root install puts clab on PATH).
+CONTAINERLAB_BIN = os.getenv(
+    "CONTAINERLAB_BIN",
+    shutil.which("containerlab") or "/home/amir/.local/bin/containerlab",
+)
+# Root (vast.ai VM) needs no sudo; non-root hosts need the passwordless
+# sudoers rule for CONTAINERLAB_BIN (see scripts/setup.sh).
+_CLAB_PREFIX = [] if os.geteuid() == 0 else ["sudo", "-n"]
 
 # Management network, pinned at the topology-generator level. containerlab's
 # default mgmt network ("clab", 172.20.20.0/24) is auto-created with IPv6 ON
@@ -106,7 +115,7 @@ class TopologyEngine:
 
     def _clab(self, args: list[str], timeout: int) -> subprocess.CompletedProcess:
         return subprocess.run(
-            ["sudo", "-n", CONTAINERLAB_BIN, *args],
+            [*_CLAB_PREFIX, CONTAINERLAB_BIN, *args],
             capture_output=True,
             text=True,
             timeout=timeout,

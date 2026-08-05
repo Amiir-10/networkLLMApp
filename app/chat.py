@@ -1,12 +1,15 @@
 import ipaddress
 import json
+import os
 import re
 
 import httpx
 
 from app.lab.models import Scenario
 
-OLLAMA_URL = "http://localhost:11434/api/chat"
+# Overridable for remote Ollama (vast.ai). Default = local daemon; an SSH
+# tunnel (-L 11434:localhost:11434) also lands on the default.
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/chat")
 
 MAX_TOOL_ITERATIONS = 3
 
