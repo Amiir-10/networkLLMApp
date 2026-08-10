@@ -9,6 +9,7 @@ import termios
 import time
 from pathlib import Path
 
+import httpx
 import yaml
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +19,7 @@ from pydantic import BaseModel
 from app.engines.topology import TopologyEngine, LabAlreadyRunning, LabNotFound
 from app.engines.security import SecurityEngine
 from app.lab.models import Scenario
-from app.chat import call_ollama, validate_node_args, dispatch_tool, MAX_TOOL_ITERATIONS, _node_ip_map, resolve_firewall
+from app.chat import call_ollama, validate_node_args, dispatch_tool, MAX_TOOL_ITERATIONS, _node_ip_map, resolve_firewall, OLLAMA_URL
 from app.prompts import build_system_prompt
 from app.metrics import MetricsCollector
 
@@ -601,6 +602,21 @@ def chat(req: ChatRequest) -> dict:
             "total_latency_s": round(time.time() - prompt_sent_at, 3),
         },
     }
+
+
+@app.get("/models")
+def list_models() -> dict:
+    """Models installed on whatever Ollama answers :11434 — the local service
+    or the GPU tunnel. Drives the GUI's model dropdown."""
+    base = OLLAMA_URL.rsplit("/api/", 1)[0]
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{base}/api/tags")
+            resp.raise_for_status()
+            names = [m["name"] for m in resp.json().get("models", [])]
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Ollama unreachable: {exc}") from exc
+    return {"models": names}
 
 
 @app.get("/metrics/session")

@@ -99,6 +99,13 @@ export async function fetchHealth(): Promise<HealthResponse> {
   return res.json();
 }
 
+export async function fetchModels(): Promise<string[]> {
+  const res = await fetch(`${BASE}/models`);
+  if (!res.ok) throw new Error(await res.text());
+  const data: { models: string[] } = await res.json();
+  return data.models;
+}
+
 export async function fetchScenarios(): Promise<ScenarioSummary[]> {
   const res = await fetch(`${BASE}/scenarios`);
   if (!res.ok) throw new Error(await res.text());

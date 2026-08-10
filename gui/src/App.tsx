@@ -3,6 +3,7 @@ import ChatView from "./components/ChatView";
 import ConsoleView from "./components/ConsoleView";
 import {
   fetchHealth,
+  fetchModels,
   fetchRules,
   fetchScenarios,
   fetchScenario,
@@ -21,7 +22,9 @@ import {
 } from "./api";
 import { buildTopology, type BuiltTopology } from "./topology";
 
-const MODELS = ["llama3.1:8b", "qwen2.5-coder:7b"];
+// Shown until the backend answers /models with what Ollama actually serves
+// (local service or GPU tunnel) — then replaced by the real list.
+const FALLBACK_MODELS = ["llama3.1:8b", "qwen2.5-coder:7b"];
 const RULE_MUTATING_TOOLS = new Set(["block_traffic", "allow_traffic", "flush_rules"]);
 
 type View = "chat" | "console";
@@ -37,7 +40,8 @@ export default function App() {
   const [scenarios, setScenarios] = useState<ScenarioSummary[]>([]);
   const [scenario, setScenario] = useState("central-hub");
   const [topology, setTopology] = useState<BuiltTopology | null>(null);
-  const [model, setModel] = useState(MODELS[0]);
+  const [models, setModels] = useState<string[]>(FALLBACK_MODELS);
+  const [model, setModel] = useState(FALLBACK_MODELS[0]);
   const [labLoading, setLabLoading] = useState(false);
   const [labError, setLabError] = useState<string | null>(null);
   const [firewallRules, setFirewallRules] = useState<ParsedRule[]>([]);
@@ -66,6 +70,16 @@ export default function App() {
 
   useEffect(() => {
     fetchScenarios().then(setScenarios).catch(() => setScenarios([]));
+  }, []);
+
+  useEffect(() => {
+    fetchModels()
+      .then((names) => {
+        if (names.length === 0) return; // Ollama up but empty — keep fallback
+        setModels(names);
+        setModel((m) => (names.includes(m) ? m : names[0]));
+      })
+      .catch(() => {}); // backend or Ollama unreachable — keep fallback
   }, []);
 
   // Build the topology for the selected scenario (reads YAML; no lab needed),
@@ -267,7 +281,7 @@ export default function App() {
           onPingEventComplete={handlePingEventComplete}
           model={model}
           setModel={setModel}
-          models={MODELS}
+          models={models}
           messages={chatMessages}
           chatLoading={chatLoading}
           onSend={sendChatMessage}

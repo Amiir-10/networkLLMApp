@@ -49,6 +49,35 @@ free port 11434 (asks for your sudo password), starts the auto-reconnect
 tunnel in the background, waits until the remote model answers, then runs
 with the RAM guard as usual. Nothing is done manually on the instance.
 
+Model downloads run detached ON the instance with live progress in your
+terminal (percent / GB / speed / ETA). A closed terminal, dropped SSH, or
+sleeping laptop cannot kill a download — re-run the same command and it
+re-attaches (interrupted downloads resume where they left off).
+
+The demo app works the same way: `./app.sh --gpu` provisions + tunnels and
+serves GUI chat from the rented GPU (default model llama3.1:8b; pass another
+as `./app.sh --gpu qwen2.5-coder:32b` and pick it in the GUI's model list).
+
+## GPU vs local — the mode-switch rules
+
+Same scripts without `--gpu` = local mode (`experiment.sh`'s model always
+comes from the spec; only `app.sh --gpu` takes an optional model). BUT:
+going GPU → local is NOT automatic. A `--gpu` session leaves the local
+Ollama stopped and the tunnel holding :11434 (on purpose — follow-up GPU
+runs are instant). Before any local run:
+
+```bash
+kill $(cat /tmp/nllm-tunnel.pid)   # free :11434 from the tunnel
+sudo systemctl start ollama        # laptop gets its local LLM back
+```
+
+Otherwise a "local" run silently uses the instance through the leftover
+tunnel — or fails confusingly if the instance is already destroyed.
+`./shutdown.sh` stops lab/backend/GUI only; it never touches the tunnel or
+local Ollama. Local → GPU needs nothing: the `--gpu` scripts stop the local
+Ollama themselves (the sudo prompt). Local mode only fits laptop-sized
+models (7B/8B specs); 32b/70b specs are GPU-only.
+
 <details>
 <summary>Manual steps (what --gpu does under the hood / fallback)</summary>
 
