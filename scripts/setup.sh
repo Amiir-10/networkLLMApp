@@ -160,7 +160,8 @@ if [[ $WITH_OLLAMA -eq 1 ]]; then
       [[ $i == 15 ]] && { echo "FAIL: ollama did not come up in 15s"; exit 1; }
     done
   fi
-  present=$(curl -sf http://localhost:11434/api/tags | grep -oE '"name":"[^"]+"' | sed 's/"name":"\(.*\)"/\1/')
+  # `|| true`: with zero models pulled, grep exits 1 and set -e would abort here.
+  present=$(curl -sf http://localhost:11434/api/tags | grep -oE '"name":"[^"]+"' | sed 's/"name":"\(.*\)"/\1/' || true)
   for m in "${MODELS[@]}"; do
     if grep -qx "$m" <<<"$present"; then
       ok "$m already pulled"

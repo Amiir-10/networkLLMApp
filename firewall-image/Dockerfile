@@ -4,6 +4,10 @@ RUN apt-get update -qq && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         firewalld \
         dbus \
+        # netbase provides /etc/protocols — without it firewalld cannot resolve
+        # protocol value="tcp|udp" in rich rules (INVALID_PROTOCOL, API 500s on
+        # port-less protocol blocks); bookworm-slim does not ship it.
+        netbase \
         nftables \
         iproute2 \
         iputils-ping \

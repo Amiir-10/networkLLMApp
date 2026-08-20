@@ -11,6 +11,13 @@ from app.lab.models import Scenario
 # tunnel (-L 11434:localhost:11434) also lands on the default.
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/chat")
 
+# Explicit context size. Ollama's default num_ctx varies by version/host and
+# it truncates an over-long prompt SILENTLY from the top — which eats the
+# system prompt and tool definitions first, after which any model stops tool
+# calling. 16384 covers long demo chats and L=8 experiment sequences; KV-cache
+# cost fits the 64 GB GPU tier alongside a 70B Q4.
+OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "16384"))
+
 MAX_TOOL_ITERATIONS = 3
 
 TOOLS = [
@@ -138,6 +145,66 @@ def _node_ip_map(scenario: Scenario) -> dict[str, str]:
     return result
 
 
+TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
+
+
+def salvage_content_tool_calls(content: str) -> tuple[list[dict], str]:
+    """Recover tool calls a model wrote as JSON TEXT instead of emitting them
+    through the tool-calling mechanism (observed with qwen2.5: once one reply
+    contains a ```json example, the model imitates it forever and 'actions'
+    become prose claims). Scans the content for JSON objects shaped like
+    {"name": <known tool>, "arguments": {...}}, returns them in Ollama
+    tool_call shape plus the content with those blocks removed — so the claim
+    becomes the action instead of a lie.
+    """
+    if not content or "{" not in content:
+        return [], content
+    decoder = json.JSONDecoder()
+    calls: list[dict] = []
+    spans: list[tuple[int, int]] = []
+    seen: set[str] = set()
+    i = 0
+    while True:
+        start = content.find("{", i)
+        if start == -1:
+            break
+        try:
+            obj, end = decoder.raw_decode(content[start:])
+        except ValueError:
+            i = start + 1
+            continue
+        if (
+            isinstance(obj, dict)
+            and obj.get("name") in TOOL_NAMES
+            and isinstance(obj.get("arguments", {}), dict)
+            # JSON the model introduces as an EXAMPLE is illustration, not
+            # intent — executing it would mutate the network on an
+            # informational turn (observed live: a "what can you block" answer
+            # got its example blocks applied). Only the text BEFORE the JSON
+            # counts: trailing "for example, verify with curl…" prose after an
+            # intended call must not veto the salvage.
+            and not re.search(
+                r"\bexamples?\b|\bfor instance\b|\be\.g\.|\bsuch as\b",
+                content[max(0, start - 200):start],
+                re.I,
+            )
+        ):
+            key = json.dumps(obj, sort_keys=True)
+            if key not in seen:  # model often repeats the same block
+                seen.add(key)
+                calls.append({"function": {"name": obj["name"], "arguments": obj.get("arguments", {})}})
+            spans.append((start, start + end))
+        i = start + max(end, 1)
+    if not calls:
+        return [], content
+    cleaned = content
+    for s, e in reversed(spans):
+        cleaned = cleaned[:s] + cleaned[e:]
+    # drop the now-empty code fences the JSON lived in
+    cleaned = re.sub(r"```(?:json)?\s*```", "", cleaned).strip()
+    return calls, cleaned
+
+
 def call_ollama(model: str, messages: list[dict], options: dict | None = None) -> dict:
     # 300s: on CPU Ollama a single tool-round has been measured at ~120s
     # (2026-07-11, warm model, leftover containers on the box) — the old 120s
@@ -152,8 +219,8 @@ def call_ollama(model: str, messages: list[dict], options: dict | None = None) -
     }
     # Ollama sampling options (temperature, seed, ...). The experiment runner
     # fixes temperature=0 so repetitions measure the model, not the sampler.
-    if options:
-        payload["options"] = options
+    # Caller options layer on top of the explicit context size.
+    payload["options"] = {"num_ctx": OLLAMA_NUM_CTX, **(options or {})}
     with httpx.Client(timeout=300.0) as client:
         resp = client.post(OLLAMA_URL, json=payload)
         resp.raise_for_status()

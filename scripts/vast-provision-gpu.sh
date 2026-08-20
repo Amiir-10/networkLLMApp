@@ -66,7 +66,9 @@ if ! curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
 fi
 echo "ok: ollama serving on :11434"
 
-present=$(curl -sf http://localhost:11434/api/tags | grep -oE '"name":"[^"]+"' | sed 's/"name":"\(.*\)"/\1/')
+# `|| true`: on a fresh instance /api/tags lists zero models, grep exits 1,
+# and set -e/pipefail would kill this script silently before any pull starts.
+present=$(curl -sf http://localhost:11434/api/tags | grep -oE '"name":"[^"]+"' | sed 's/"name":"\(.*\)"/\1/' || true)
 for m in "$@"; do
   if printf '%s\n' "$present" | grep -qx "$m"; then
     echo "ok: $m already pulled"

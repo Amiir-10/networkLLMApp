@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS interactions (
     eval_count INTEGER,
     ground_truth_tool TEXT,
     ground_truth_args TEXT,
+    salvaged INTEGER,
     created_at TEXT DEFAULT (datetime('now'))
 );
 """
@@ -35,6 +36,9 @@ def _ensure_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(str(DB_PATH)) as conn:
         conn.executescript(_SCHEMA)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(interactions)")}
+        if "salvaged" not in cols:
+            conn.execute("ALTER TABLE interactions ADD COLUMN salvaged INTEGER")
 
 
 @contextmanager
@@ -70,6 +74,7 @@ class MetricsCollector:
             "execution_result", "execution_success", "prompt_sent_at",
             "llm_response_at", "tool_executed_at", "prompt_eval_count",
             "eval_count", "ground_truth_tool", "ground_truth_args",
+            "salvaged",
         ]
         values = [interaction.get(c) for c in cols]
         placeholders = ",".join("?" * len(cols))

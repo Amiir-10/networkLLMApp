@@ -3,6 +3,7 @@ import fcntl
 import json
 import os
 import pty
+import re
 import struct
 import subprocess
 import termios
@@ -19,7 +20,7 @@ from pydantic import BaseModel
 from app.engines.topology import TopologyEngine, LabAlreadyRunning, LabNotFound
 from app.engines.security import SecurityEngine
 from app.lab.models import Scenario
-from app.chat import call_ollama, validate_node_args, dispatch_tool, MAX_TOOL_ITERATIONS, _node_ip_map, resolve_firewall, OLLAMA_URL
+from app.chat import call_ollama, validate_node_args, dispatch_tool, MAX_TOOL_ITERATIONS, _node_ip_map, resolve_firewall, OLLAMA_URL, OLLAMA_NUM_CTX, salvage_content_tool_calls
 from app.prompts import build_system_prompt
 from app.metrics import MetricsCollector
 
@@ -58,7 +59,56 @@ metrics = MetricsCollector()
 
 _active_scenario: Scenario | None = None
 _active_model: str = "llama3.1:8b"
+# Full-fidelity chat history: user turns, assistant turns WITH their
+# tool_calls, and the tool result messages. Persisting only the prose (the
+# old behaviour) showed models a conversation where actions apparently happen
+# by assertion — qwen2.5 imitated that pattern within a few turns and stopped
+# tool calling entirely, fabricating results in prose instead.
 _conversation_history: list[dict] = []
+
+
+def _trim_history() -> None:
+    """Keep the rendered prompt safely under num_ctx. Ollama truncates an
+    over-long prompt silently from the TOP — system prompt and tool schemas
+    go first — so we drop the OLDEST whole user-turn groups ourselves instead.
+    Rough estimate: ~3 chars/token; budget leaves room for system prompt,
+    tool schemas, and the response."""
+    budget_chars = int(OLLAMA_NUM_CTX * 0.7) * 3
+    def total() -> int:
+        return sum(len(json.dumps(m, default=str)) for m in _conversation_history)
+    while _conversation_history and total() > budget_chars:
+        cut = 1
+        while cut < len(_conversation_history) and _conversation_history[cut].get("role") != "user":
+            cut += 1
+        print(f"[chat] history over budget — dropping oldest turn ({cut} message(s))", flush=True)
+        del _conversation_history[:cut]
+
+
+# Deterministic response-acceptance guards. Prompt instructions alone do not
+# hold (verified live 2026-08-20: qwen2.5:14b drifted into Chinese and claimed
+# an unexecuted block DESPITE explicit system-prompt rules against both). A
+# rejected response is fed back with a corrective system message and re-asked,
+# bounded by MAX_CORRECTIVE_RETRIES; rejected text never enters the shared
+# history, so it cannot teach later turns the bad pattern.
+MAX_CORRECTIVE_RETRIES = 2
+_NON_ENGLISH_RE = re.compile(
+    r"[一-鿿぀-ヿ가-힯฀-๿Ѐ-ӿ؀-ۿ]"
+)
+_ACTION_CLAIM_RE = re.compile(
+    # completed-action claims: "I have blocked", "I ran", …
+    r"\bI\s*(?:'ve|have|had)?\s*(?:now\s+|just\s+|successfully\s+|already\s+)*"
+    r"(?:block|unblock|allow|restor|flush|remov|re-?enabl|appli|add|ran|execut|perform|scann)\w*"
+    # passive completion claims: "traffic is now blocked", …
+    r"|(?:has\s+been|have\s+been|is\s+now|are\s+now)\s+"
+    r"(?:blocked|unblocked|allowed|restored|removed|applied|re-?enabled|flushed|dropped)"
+    # announced-intent-then-yield: "I will add a rule", "Let's proceed with
+    # blocking" followed by no tool call (observed live — future tense slips
+    # past the completion patterns and nothing happens)
+    r"|\b(?:I\s+will|I'll|let'?s|let\s+me|proceeding\s+to|going\s+to)\s+(?:now\s+)?"
+    r"(?:proceed\s+(?:with|to)\s+)?"
+    r"(?:block|unblock|allow|restor|flush|remov|re-?enabl|appli|add|run|test|scan)",
+    re.I,
+)
 
 
 @app.get("/health")
@@ -467,6 +517,8 @@ def chat(req: ChatRequest) -> dict:
         raise HTTPException(status_code=400, detail="Firewall driver not connected.")
 
     _active_model = req.model
+    _trim_history()
+    turn_start = len(_conversation_history)
     _conversation_history.append({"role": "user", "content": req.message})
 
     # Inject the live DROP rules into the system prompt as ground-truth data so
@@ -481,7 +533,13 @@ def chat(req: ChatRequest) -> dict:
     first_llm_at: float | None = None
     prompt_sent_at = time.time()
 
-    for iteration in range(MAX_TOOL_ITERATIONS + 1):
+    # Two separate budgets: tool rounds (unchanged semantics — bounds how many
+    # execute-and-reprompt cycles a turn may take) and corrective retries (the
+    # acceptance guard below; rejected responses don't consume tool rounds).
+    iteration = 0
+    tool_rounds = 0
+    corrective_retries = 0
+    while True:
         print(
             f"[chat] iter={iteration} sending {len(messages)} messages; "
             f"last role={messages[-1].get('role')!r}",
@@ -499,13 +557,14 @@ def chat(req: ChatRequest) -> dict:
         try:
             ollama_resp = call_ollama(req.model, messages, req.options)
         except Exception as e:
-            # Roll back the user turn appended above. A failed call (e.g. a
-            # cold-start timeout) must not leave a dangling user message in the
-            # shared history — a thread with consecutive user turns and no
-            # assistant/tool replies was the root cause of allow_traffic
-            # silently no-op'ing on a later "re-enable" turn.
-            if _conversation_history and _conversation_history[-1].get("role") == "user":
-                _conversation_history.pop()
+            # Roll back the ENTIRE in-flight turn (user message and any
+            # already-persisted assistant/tool messages from earlier
+            # iterations). A failed call (e.g. a cold-start timeout) must not
+            # leave a half-finished turn in the shared history — a thread with
+            # consecutive user turns and no assistant/tool replies was the
+            # root cause of allow_traffic silently no-op'ing on a later
+            # "re-enable" turn.
+            del _conversation_history[turn_start:]
             raise HTTPException(status_code=502, detail=f"Ollama error: {e}")
 
         now = time.time()
@@ -517,6 +576,21 @@ def chat(req: ChatRequest) -> dict:
 
         msg = ollama_resp.get("message", {})
         tool_calls = msg.get("tool_calls", [])
+        salvaged = False
+        if not tool_calls:
+            # Model wrote a tool call as JSON text instead of emitting it
+            # (qwen2.5 failure mode) — recover and EXECUTE it so the claim
+            # becomes the action instead of a fabricated result.
+            salvaged_calls, cleaned = salvage_content_tool_calls(msg.get("content", ""))
+            if salvaged_calls:
+                salvaged = True
+                msg = {"role": "assistant", "content": cleaned, "tool_calls": salvaged_calls}
+                tool_calls = salvaged_calls
+                print(
+                    f"[chat] iter={iteration} SALVAGED {len(salvaged_calls)} tool call(s) "
+                    f"written as JSON text: {[c['function']['name'] for c in salvaged_calls]}",
+                    flush=True,
+                )
         print(
             f"[chat] iter={iteration} response role={msg.get('role')!r} "
             f"content={msg.get('content', '')!r} tool_calls={len(tool_calls)} "
@@ -531,11 +605,68 @@ def chat(req: ChatRequest) -> dict:
             )
 
         if not tool_calls:
-            interaction["prose_response"] = msg.get("content", "")
+            assistant_content = msg.get("content", "")
+
+            # Acceptance guard: reject and re-ask instead of returning (and
+            # persisting) a response that breaks a hard invariant.
+            not_english = bool(_NON_ENGLISH_RE.search(assistant_content))
+            false_claim = bool(
+                not all_tool_results and _ACTION_CLAIM_RE.search(assistant_content)
+            )
+            if (not_english or false_claim) and corrective_retries < MAX_CORRECTIVE_RETRIES:
+                corrective_retries += 1
+                iteration += 1
+                if not_english:
+                    reason = "response not in English"
+                    # Keep the draft visible — the model must translate it.
+                    messages.append({"role": "assistant", "content": assistant_content})
+                    messages.append({
+                        "role": "user",
+                        "content": "Rewrite your previous reply in English only. "
+                                   "Keep exactly the same information.",
+                    })
+                else:
+                    reason = "claimed an action but no tool ran this turn"
+                    # Do NOT append the bad draft: at low temperature the model
+                    # anchors on it and repeats it verbatim (observed live —
+                    # two system-role corrections were ignored word-for-word).
+                    # A user-role correction with a fresh slate works instead.
+                    messages.append({
+                        "role": "user",
+                        "content": "Your reply was discarded: you claimed an action or "
+                                   "result, but you called NO tool, so nothing was "
+                                   "executed and no result exists. My request was: "
+                                   f"\"{req.message}\". If it requires an action or "
+                                   "test, emit the appropriate tool call(s) NOW. "
+                                   "Only describe an action as done after a tool call "
+                                   "executed it.",
+                    })
+                print(
+                    f"[chat] iter={iteration} REJECTED response ({reason}) — "
+                    f"corrective retry {corrective_retries}/{MAX_CORRECTIVE_RETRIES}",
+                    flush=True,
+                )
+                interaction["prose_response"] = f"[retracted: {reason}] {assistant_content}"
+                interaction["execution_success"] = True
+                metrics.record(interaction)
+                continue
+
+            if false_claim:
+                # Retries exhausted and the model still claims an unexecuted
+                # action: deterministically tell the truth. The disclaimer is
+                # returned AND persisted, so neither the user nor later turns
+                # inherit the false claim.
+                assistant_content += (
+                    "\n\n⚠️ Note: no tool was actually executed this turn, so no "
+                    "change or test happened on the network. Please ask again to "
+                    "perform the action."
+                )
+                print("[chat] retries exhausted — false-claim disclaimer appended", flush=True)
+
+            interaction["prose_response"] = assistant_content
             interaction["execution_success"] = True
             metrics.record(interaction)
 
-            assistant_content = msg.get("content", "")
             _conversation_history.append({"role": "assistant", "content": assistant_content})
 
             return {
@@ -548,6 +679,7 @@ def chat(req: ChatRequest) -> dict:
             }
 
         messages.append(msg)
+        _conversation_history.append(msg)
 
         for tc in tool_calls:
             fn = tc.get("function", {})
@@ -557,6 +689,7 @@ def chat(req: ChatRequest) -> dict:
             per_tool = metrics.start_interaction(req.model, req.message)
             per_tool["tool_call"] = name
             per_tool["tool_args"] = str(args)
+            per_tool["salvaged"] = 1 if salvaged else 0
 
             validation_err = validate_node_args(args, _active_scenario)
             if validation_err:
@@ -586,13 +719,22 @@ def chat(req: ChatRequest) -> dict:
                     tool_output = {"error": str(e)}
                     all_tool_results.append({"tool": name, "args": args, "error": str(e)})
 
-            messages.append({"role": "tool", "content": json.dumps(tool_output)})
+            tool_msg = {"role": "tool", "content": json.dumps(tool_output)}
+            messages.append(tool_msg)
+            _conversation_history.append(tool_msg)
 
+        interaction["salvaged"] = 1 if salvaged else 0
         interaction["execution_success"] = True
         metrics.record(interaction)
 
+        iteration += 1
+        tool_rounds += 1
+        if tool_rounds > MAX_TOOL_ITERATIONS:
+            break
+
+    # Tool-round budget exhausted: the assistant msg + tool results of the
+    # final round are already persisted above — history stays as-is.
     final_content = msg.get("content", "") or "Actions completed."
-    _conversation_history.append({"role": "assistant", "content": final_content})
 
     return {
         "response": final_content,

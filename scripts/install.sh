@@ -57,7 +57,8 @@ if ! curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
   echo "    Ollama not responding on :11434 — start it ('ollama serve' or 'systemctl --user start ollama') and re-run."
   echo "    Skipping model pulls."
 else
-  present=$(curl -sf http://localhost:11434/api/tags | grep -oE '"name":"[^"]+"' | sed 's/"name":"\(.*\)"/\1/')
+  # `|| true`: with zero models pulled, grep exits 1 and set -e would abort here.
+  present=$(curl -sf http://localhost:11434/api/tags | grep -oE '"name":"[^"]+"' | sed 's/"name":"\(.*\)"/\1/' || true)
   for m in llama3.1:8b qwen2.5-coder:7b; do
     if grep -qx "$m" <<<"$present"; then
       echo "    $m: already present"
