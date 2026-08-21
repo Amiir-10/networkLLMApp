@@ -56,7 +56,7 @@ function FirewallPanel({
         ) : (
           <ul className="space-y-1">
             {myDrops.map((r) => (
-              <li key={r.raw} className="font-mono text-[11px] px-1.5 py-0.5 bg-red-50 border border-red-200 text-red-700 rounded">
+              <li key={r.raw} className="font-mono text-xs px-1.5 py-0.5 bg-red-50 border border-red-200 text-red-700 rounded">
                 {ipToNodeLabel(ipMap, r.src_ip)} → {ipToNodeLabel(ipMap, r.dst_ip)}
                 {r.proto ? ` (${r.proto}${r.port ? `:${r.port}` : ""})` : ""}
               </li>
@@ -127,14 +127,14 @@ export default function ConsoleView({ topology, labReady, scenario, dropRules, r
           onNodeClick={setSelected}
         />
         {!labReady && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 text-[11px] text-gray-400 bg-white/80 border border-gray-200 rounded-full px-3 py-1 pointer-events-none">
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 text-xs text-gray-400 bg-white/80 border border-gray-200 rounded-full px-3 py-1 pointer-events-none">
             Start a lab to open live shells — this is a preview of the topology
           </div>
         )}
       </div>
 
       {selected && (
-        <div className="w-[460px] border-l border-gray-200 flex flex-col min-h-0">
+        <div className="w-[28rem] border-l border-gray-200 flex flex-col min-h-0">
           <div className="px-3 py-2 border-b border-gray-200 flex items-center justify-between bg-gray-50">
             <span className="text-sm font-semibold text-gray-700">
               {selected}

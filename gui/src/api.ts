@@ -1,5 +1,11 @@
-const BASE = "http://localhost:8000";
-const WS_BASE = "ws://localhost:8000";
+// Dev (vite on :5173): talk to the local backend directly.
+// Production build: the backend itself serves this GUI, so same-origin
+// relative URLs work wherever the app is hosted (vast.ai public port,
+// cloudflare tunnel, localhost) — including behind HTTPS.
+const BASE = import.meta.env.DEV ? "http://localhost:8000" : "";
+const WS_BASE = import.meta.env.DEV
+  ? "ws://localhost:8000"
+  : `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}`;
 
 export interface HealthResponse {
   status: string;
@@ -99,11 +105,14 @@ export async function fetchHealth(): Promise<HealthResponse> {
   return res.json();
 }
 
-export async function fetchModels(): Promise<string[]> {
+// `defaultModel` is set only in showcase hosting (SHOWCASE_MODEL on the
+// backend): the model provisioned + kept warm for the event, which the GUI
+// should preselect. Null in local dev.
+export async function fetchModels(): Promise<{ models: string[]; defaultModel: string | null }> {
   const res = await fetch(`${BASE}/models`);
   if (!res.ok) throw new Error(await res.text());
-  const data: { models: string[] } = await res.json();
-  return data.models;
+  const data: { models: string[]; default?: string | null } = await res.json();
+  return { models: data.models, defaultModel: data.default ?? null };
 }
 
 export async function fetchScenarios(): Promise<ScenarioSummary[]> {

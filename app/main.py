@@ -1,9 +1,12 @@
 import asyncio
+import base64
 import fcntl
+import hashlib
 import json
 import os
 import pty
 import re
+import secrets
 import struct
 import subprocess
 import termios
@@ -14,7 +17,8 @@ import httpx
 import yaml
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.engines.topology import TopologyEngine, LabAlreadyRunning, LabNotFound
@@ -36,6 +40,47 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Showcase auth (opt-in) ────────────────────────────────────────────────
+# Set SHOWCASE_PASSWORD to put the whole app (API + GUI + console WebSocket)
+# behind HTTP Basic auth — used when hosting publicly for the supervisor.
+# Unset (the default) = no auth, local dev unchanged. The username is ignored.
+SHOWCASE_PASSWORD = os.environ.get("SHOWCASE_PASSWORD", "")
+_AUTH_COOKIE = "showcase_token"
+
+
+def _auth_token() -> str:
+    # Derived, non-reversible cookie value. Browsers do not reliably attach
+    # Basic credentials to WebSocket handshakes, but they DO send cookies —
+    # this cookie is how the PTY console WebSocket stays protected.
+    return hashlib.sha256(f"showcase:{SHOWCASE_PASSWORD}".encode()).hexdigest()[:32]
+
+
+def _cookie_ok(cookies: dict[str, str]) -> bool:
+    return secrets.compare_digest(cookies.get(_AUTH_COOKIE, ""), _auth_token())
+
+
+@app.middleware("http")
+async def showcase_basic_auth(request: Request, call_next):
+    if not SHOWCASE_PASSWORD or _cookie_ok(request.cookies):
+        return await call_next(request)
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("basic "):
+        try:
+            _, _, password = base64.b64decode(auth[6:]).decode().partition(":")
+        except Exception:
+            password = ""
+        if secrets.compare_digest(password, SHOWCASE_PASSWORD):
+            response = await call_next(request)
+            response.set_cookie(
+                _AUTH_COOKIE, _auth_token(), httponly=True, samesite="lax"
+            )
+            return response
+    return Response(
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="networkLLMApp showcase"'},
+    )
 
 
 @app.exception_handler(Exception)
@@ -382,6 +427,12 @@ async def console_ws(websocket: WebSocket, scenario_name: str, node: str) -> Non
     so sends stay ordered and never overlap on the one socket. Protocol is JSON
     frames: {"type":"input","data":str} and {"type":"resize","cols":int,"rows":int}.
     """
+    # BaseHTTPMiddleware never sees WebSocket scopes, so the showcase auth
+    # must be enforced here via the cookie set on the authenticated page load.
+    if SHOWCASE_PASSWORD and not _cookie_ok(websocket.cookies):
+        await websocket.close(code=4401)
+        return
+
     await websocket.accept()
 
     scenario = _active_scenario
@@ -758,7 +809,11 @@ def list_models() -> dict:
             names = [m["name"] for m in resp.json().get("models", [])]
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Ollama unreachable: {exc}") from exc
-    return {"models": names}
+    # Showcase hosting: SHOWCASE_MODEL (set by showcase-remote.sh) is the model
+    # provisioned + warmed for the event — the GUI selects it by default so the
+    # first question doesn't land on a cold model. Absent in local dev.
+    default = os.environ.get("SHOWCASE_MODEL")
+    return {"models": names, "default": default if default in names else None}
 
 
 @app.get("/metrics/session")
@@ -769,3 +824,14 @@ def get_session_metrics() -> dict:
 @app.get("/metrics/models")
 def get_model_summary() -> list[dict]:
     return metrics.get_model_summary()
+
+
+# ── Built GUI (single-port hosting) ───────────────────────────────────────
+# When gui/dist exists (npm run build), the backend serves the GUI itself, so
+# one port (8000) carries the whole app — the shape remote hosting needs
+# (vast.ai open port / tunnel = ONE public URL). Registered last: mounts are
+# matched after the API routes above, so "/" falls through to index.html only
+# when no API route matches. Local dev (vite on :5173) is unaffected.
+_GUI_DIST = REPO_ROOT / "gui" / "dist"
+if _GUI_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=_GUI_DIST, html=True), name="gui")

@@ -1,5 +1,22 @@
 @import "tailwindcss";
 
+/* Showcase legibility: the whole UI scales with the screen size. Tailwind
+   text AND spacing utilities are rem-based, so scaling the root font-size
+   scales the entire layout proportionally — ~17px root on a small laptop,
+   capped at 26px on a large booth display. */
+html {
+  font-size: clamp(16px, 0.9vw + 8px, 26px);
+}
+
+/* Raise the floor of the two smallest type steps — no tiny text on a
+   screen viewed from a distance. */
+@theme {
+  --text-xs: 0.85rem;
+  --text-xs--line-height: 1.35;
+  --text-sm: 0.975rem;
+  --text-sm--line-height: 1.45;
+}
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;

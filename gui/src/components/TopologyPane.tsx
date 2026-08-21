@@ -132,7 +132,7 @@ function DeviceNode({ data }: NodeProps) {
           className="absolute top-full left-1/2 -translate-x-1/2 mt-2 flex flex-col gap-1 items-center pointer-events-none"
           style={{ zIndex: 5 }}
         >
-          <span className="text-[11px] uppercase tracking-wide text-red-600/70 font-semibold">Active DROP</span>
+          <span className="text-xs uppercase tracking-wide text-red-600/70 font-semibold">Active DROP</span>
           {myDrops.slice(0, 6).map((r) => (
             <div
               key={r.raw}
@@ -141,7 +141,7 @@ function DeviceNode({ data }: NodeProps) {
               {ruleChipLabel(r, ipMap)}
             </div>
           ))}
-          {myDrops.length > 6 && <span className="text-[11px] text-red-500">+{myDrops.length - 6} more</span>}
+          {myDrops.length > 6 && <span className="text-xs text-red-500">+{myDrops.length - 6} more</span>}
         </div>
       )}
     </div>

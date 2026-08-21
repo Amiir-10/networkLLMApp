@@ -25,7 +25,11 @@ export default function ConsoleTerminal({ scenario, node }: Props) {
 
     const term = new Terminal({
       cursorBlink: true,
-      fontSize: 13,
+      // Track the root font-size so the terminal scales with the screen
+      // like the rest of the UI (see index.css html { font-size: clamp(...) }).
+      fontSize: Math.round(
+        parseFloat(getComputedStyle(document.documentElement).fontSize) * 0.85
+      ),
       fontFamily: 'ui-monospace, "Cascadia Code", "Fira Code", Menlo, monospace',
       theme: { background: "#0b1020", foreground: "#e2e8f0" },
     });
@@ -79,7 +83,7 @@ export default function ConsoleTerminal({ scenario, node }: Props) {
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      <div className="flex items-center gap-2 px-2 py-1 text-[11px] border-b border-gray-200 bg-gray-50">
+      <div className="flex items-center gap-2 px-2 py-1 text-xs border-b border-gray-200 bg-gray-50">
         <span
           className={`w-2 h-2 rounded-full ${
             status === "open"

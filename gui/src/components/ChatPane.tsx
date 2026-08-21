@@ -31,7 +31,7 @@ function ToolCallDetail({ tc }: { tc: ChatResponse["tool_calls"][number] }) {
         <div className="mt-1 pl-4 font-mono text-gray-600 break-all border-t border-gray-100 pt-1">
           {tc.error && <p className="text-red-500">{tc.error}</p>}
           {!!tc.result && (
-            <pre className="whitespace-pre-wrap text-[11px]">
+            <pre className="whitespace-pre-wrap text-xs">
               {typeof tc.result === "string" ? tc.result : JSON.stringify(tc.result, null, 2)}
             </pre>
           )}

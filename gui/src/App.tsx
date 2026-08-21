@@ -74,10 +74,12 @@ export default function App() {
 
   useEffect(() => {
     fetchModels()
-      .then((names) => {
+      .then(({ models: names, defaultModel }) => {
         if (names.length === 0) return; // Ollama up but empty — keep fallback
         setModels(names);
-        setModel((m) => (names.includes(m) ? m : names[0]));
+        // Showcase hosting advertises the provisioned+warm model — land on it.
+        // Runs once at mount, so this can never override a user's choice.
+        setModel((m) => defaultModel ?? (names.includes(m) ? m : names[0]));
       })
       .catch(() => {}); // backend or Ollama unreachable — keep fallback
   }, []);
@@ -268,7 +270,7 @@ export default function App() {
             )}
           </div>
 
-          {labError && <span className="text-xs text-red-500 max-w-[200px] truncate" title={labError}>{labError}</span>}
+          {labError && <span className="text-xs text-red-500 max-w-[12rem] truncate" title={labError}>{labError}</span>}
         </div>
       </header>
 

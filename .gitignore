@@ -8,3 +8,6 @@ clab-*/
 data/
 .DS_Store
 scripts/vast-instance.env
+scripts/showcase-password
+wheelhouse/
+images-cache/
