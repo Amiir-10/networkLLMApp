@@ -15,7 +15,10 @@
 # scenario keeps idle=False and the UDP service starts via launch after L3 is up.
 FROM nginx:alpine
 
-RUN apk add --no-cache openssl socat \
+# lynx: a real terminal web browser, usable from the live console shell
+# (`lynx http://example.com`) — the undeniably-real complement to the GUI
+# Browser tab (supervisor request 2026-08-25).
+RUN apk add --no-cache openssl socat lynx \
     && mkdir -p /etc/nginx/certs \
     && openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
         -keyout /etc/nginx/certs/server.key \
@@ -24,5 +27,11 @@ RUN apk add --no-cache openssl socat \
     && rm -rf /var/cache/apk/*
 
 COPY default.conf /etc/nginx/conf.d/default.conf
+
+# The demo's "internet website": nginx serves an Example-Domain-style page for
+# Host: example.com / www.example.com (see default.conf's second server block).
+# The scenario maps example.com to ONE web PC's data-plane IP via /etc/hosts
+# (Node.aliases), so browsing it from another PC crosses the firewalls.
+COPY example-index.html /usr/share/nginx/html-example/index.html
 
 EXPOSE 80 443

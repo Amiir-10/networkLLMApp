@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import ChatView from "./components/ChatView";
 import ConsoleView from "./components/ConsoleView";
+import BrowserView, { initialBrowserState, type BrowserTabState } from "./components/BrowserView";
 import {
   fetchHealth,
   fetchModels,
@@ -27,7 +28,7 @@ import { buildTopology, type BuiltTopology } from "./topology";
 const FALLBACK_MODELS = ["llama3.1:8b", "qwen2.5-coder:7b"];
 const RULE_MUTATING_TOOLS = new Set(["block_traffic", "allow_traffic", "flush_rules"]);
 
-type View = "chat" | "console";
+type View = "chat" | "console" | "browser";
 
 function isPingBlocked(lossLine: string | undefined): boolean {
   if (!lossLine) return true;
@@ -52,6 +53,9 @@ export default function App() {
   // mirror. Both are cleared together on lab start/stop/reset and Clear.
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatLoading, setChatLoading] = useState(false);
+  // Browser tab state lives here (like the chat) so the last-visited page
+  // survives the browse -> block-via-chat -> browse-again demo flow.
+  const [browserState, setBrowserState] = useState<BrowserTabState>(initialBrowserState);
   const pingIdRef = useRef(0);
 
   const pollHealth = useCallback(async () => {
@@ -234,6 +238,7 @@ export default function App() {
         <nav className="flex items-center gap-1 bg-gray-100 rounded-md p-0.5">
           <button className={tabClass(view === "chat")} onClick={() => setView("chat")}>Chat</button>
           <button className={tabClass(view === "console")} onClick={() => setView("console")}>Console</button>
+          <button className={tabClass(view === "browser")} onClick={() => setView("browser")}>Browser</button>
         </nav>
 
         <div className="ml-auto flex items-center gap-3">
@@ -289,13 +294,20 @@ export default function App() {
           onSend={sendChatMessage}
           onClear={clearChatHistory}
         />
-      ) : (
+      ) : view === "console" ? (
         <ConsoleView
           topology={topology}
           labReady={labReady}
           scenario={scenario}
           dropRules={dropRules}
           refetchRules={refetchRules}
+        />
+      ) : (
+        <BrowserView
+          topology={topology}
+          labReady={labReady}
+          state={browserState}
+          setState={setBrowserState}
         />
       )}
     </div>

@@ -106,6 +106,11 @@ nodes:
     idle: false          # nginx (HTTP 80 + HTTPS 443) runs as PID 1
     ports: [80, 443, 9999]
     launch: "socat UDP-LISTEN:9999,fork,reuseaddr EXEC:/bin/cat"   # persistent UDP echo
+    # pc1b doubles as the demo's "internet" website: every container resolves
+    # example.com to pc1b's DATA-plane IP (so browsing it crosses both
+    # firewalls), and weblab's nginx serves an Example-Domain-style page for
+    # this server_name. "Block example.com from pc1a" is a real, working block.
+    aliases: [example.com, www.example.com]
     interfaces:
       - {to: switchb, ip: 10.20.1.11/24, gateway: 10.20.1.1}
 

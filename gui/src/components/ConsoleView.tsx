@@ -1,10 +1,15 @@
 import { useMemo, useState } from "react";
 import TopologyPane from "./TopologyPane";
 import ConsoleTerminal from "./ConsoleTerminal";
-import { addRule, type ParsedRule } from "../api";
+import { addRule, flushRules, type ParsedRule } from "../api";
 import { ipToNodeLabel, type BuiltTopology } from "../topology";
 
 const PROTOS = ["icmp", "tcp", "udp"];
+
+// Typed + run automatically when a firewall's shell opens: the firewalld
+// forward policy (fwd-filter) is where every block/allow rich rule lives —
+// this is the real "show me the current rules" command (supervisor request).
+const FW_RULES_CMD = "firewall-cmd --policy=fwd-filter --list-rich-rules";
 
 // Read-only rule view + add-rule form for ONE firewall (the clicked node):
 // rules filtered to this firewall, an added rule explicitly targets it.
@@ -31,6 +36,21 @@ function FirewallPanel({
 
   const portable = proto === "tcp" || proto === "udp";
   const myDrops = dropRules.filter((r) => (r.firewall ?? firewall) === firewall);
+  const [clearing, setClearing] = useState(false);
+
+  async function clearRules() {
+    if (!window.confirm(`Clear ALL rules on ${firewall}? Blocked traffic starts flowing again.`)) return;
+    setClearing(true);
+    setErr(null);
+    try {
+      await flushRules(firewall);
+      onChanged();
+    } catch (e2) {
+      setErr(String(e2));
+    } finally {
+      setClearing(false);
+    }
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -50,7 +70,17 @@ function FirewallPanel({
   return (
     <div className="border-b border-gray-200 p-3 text-xs space-y-3">
       <div>
-        <div className="font-semibold text-gray-700 mb-1">Active DROP rules ({firewall})</div>
+        <div className="flex items-center justify-between mb-1">
+          <span className="font-semibold text-gray-700">Active DROP rules ({firewall})</span>
+          <button
+            onClick={clearRules}
+            disabled={clearing || myDrops.length === 0}
+            title={myDrops.length === 0 ? "No rules to clear" : `Remove every rule on ${firewall}`}
+            className="text-red-600 border border-red-300 px-2 py-0.5 rounded font-medium disabled:opacity-40 hover:bg-red-50 transition-colors"
+          >
+            {clearing ? "…" : "Clear rules"}
+          </button>
+        </div>
         {myDrops.length === 0 ? (
           <div className="text-gray-400">none</div>
         ) : (
@@ -155,8 +185,14 @@ export default function ConsoleView({ topology, labReady, scenario, dropRules, r
                 />
               )}
               <div className="flex-1 min-h-0">
-                {/* key remounts the terminal (fresh ws/PTY) when the node changes */}
-                <ConsoleTerminal key={selected} scenario={scenario} node={selected} />
+                {/* key remounts the terminal (fresh ws/PTY) when the node changes.
+                    Firewalls auto-run the show-rules command on open. */}
+                <ConsoleTerminal
+                  key={selected}
+                  scenario={scenario}
+                  node={selected}
+                  autoCommand={selectedRole === "firewall" ? FW_RULES_CMD : undefined}
+                />
               </div>
             </>
           ) : (

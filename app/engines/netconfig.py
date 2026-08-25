@@ -102,6 +102,10 @@ def write_data_plane_hosts(scenario_name: str, scenario: Scenario) -> list[str]:
         for iface in node.interfaces:
             if iface.ip:
                 name_ip[node.id] = iface.ip.split("/")[0]
+                # Scenario-declared aliases (e.g. example.com -> pc1b) resolve to
+                # the same data-plane IP, so browsing them crosses the firewall.
+                for alias in node.aliases:
+                    name_ip[alias] = iface.ip.split("/")[0]
                 break  # primary (first L3) interface, same pick as _node_ip_map
     if not name_ip:
         return []

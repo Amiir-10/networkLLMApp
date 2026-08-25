@@ -12,6 +12,7 @@ import subprocess
 import termios
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 import yaml
@@ -24,7 +25,7 @@ from pydantic import BaseModel
 from app.engines.topology import TopologyEngine, LabAlreadyRunning, LabNotFound
 from app.engines.security import SecurityEngine
 from app.lab.models import Scenario
-from app.chat import call_ollama, validate_node_args, dispatch_tool, MAX_TOOL_ITERATIONS, _node_ip_map, resolve_firewall, OLLAMA_URL, OLLAMA_NUM_CTX, salvage_content_tool_calls
+from app.chat import call_ollama, validate_node_args, dispatch_tool, MAX_TOOL_ITERATIONS, _node_ip_map, resolve_firewall, OLLAMA_URL, OLLAMA_NUM_CTX, salvage_content_tool_calls, alias_map
 from app.prompts import build_system_prompt
 from app.metrics import MetricsCollector
 
@@ -363,16 +364,22 @@ def get_rules() -> dict:
 
 
 @app.post("/rules/flush")
-def flush_rules() -> dict:
+def flush_rules(firewall: str | None = None) -> dict:
     """Deterministic clean-slate for the rule set (no LLM in the loop).
 
     Same engine method the LLM's flush_rules tool dispatches to — the
     experiment runner uses this between repetitions so every rep starts from
     an identical firewall state without paying for a full lab redeploy.
+    No `firewall` query param = flush EVERY firewall (unchanged behavior);
+    `?firewall=fwa` = clear only that firewall (the console panel's button).
     """
     if not security.connected:
         raise HTTPException(status_code=400, detail="Firewall driver not connected.")
-    return {"status": "flushed", "result": security.flush()}
+    try:
+        result = security.flush(fw_id=firewall)
+    except RuntimeError as exc:  # unknown firewall id
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"status": "flushed", "firewall": firewall, "result": result}
 
 
 class RuleRequest(BaseModel):
@@ -413,6 +420,87 @@ def add_rule(req: RuleRequest) -> dict:
     result = security.block(src_ip, dst_ip, req.proto, req.port, fw_id=fw_id)
     return {"status": "added", "src": req.src, "dst": req.dst, "proto": req.proto,
             "port": req.port, "firewall": fw_id, "result": result}
+
+
+class BrowseRequest(BaseModel):
+    node: str  # the lab PC doing the browsing
+    url: str   # http[s]://<lab-host>[:port][/path] — lab hosts only
+
+
+@app.post("/browse")
+def browse(req: BrowseRequest) -> dict:
+    """Fetch a web page FROM INSIDE a lab PC (the GUI's Browser tab).
+
+    This is a REAL request, not a simulation: `wget` runs inside the source
+    container, resolves the hostname via the container's own /etc/hosts
+    (data-plane IPs — see write_data_plane_hosts), and the traffic crosses
+    the routed PC->switch->firewall path, so an active DROP rule visibly
+    kills the page load.
+
+    Targets are restricted to the lab's own hosts (node ids, scenario aliases
+    like example.com, or data IPs). Anything else is refused — traffic to the
+    real internet would leave via the containerlab management bridge, which
+    BYPASSES the lab firewalls, and a "blocked" site loading fine would be a
+    lie on stage.
+    """
+    if not _active_scenario:
+        raise HTTPException(status_code=400, detail="No lab is running. Start a lab first.")
+
+    src = next((n for n in _active_scenario.nodes if n.id == req.node), None)
+    if src is None or src.role != "pc":
+        pcs = sorted(n.id for n in _active_scenario.nodes if n.role == "pc")
+        raise HTTPException(status_code=400, detail=f"Browsing source must be a lab PC. Valid: {pcs}")
+
+    raw_url = req.url.strip()
+    if "://" not in raw_url:
+        raw_url = f"http://{raw_url}"
+    parts = urlsplit(raw_url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise HTTPException(status_code=400, detail=f"Not a valid http/https URL: '{req.url}'")
+
+    # Lab-internal hosts only: node names, scenario aliases, and data-plane IPs.
+    ip_map = _node_ip_map(_active_scenario)
+    aliases = alias_map(_active_scenario)
+    host = parts.hostname.lower()
+    server_node = None
+    if host in ip_map:
+        server_node = host
+    elif host in aliases:
+        server_node = aliases[host]
+    else:
+        by_ip = {ip: node for node, ip in ip_map.items()}
+        server_node = by_ip.get(host)
+    if server_node is None:
+        reachable = sorted(set(list(aliases) + [n for n, _ in ip_map.items()]))
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"'{host}' is not part of the lab network. Reachable from a lab PC: "
+                f"{reachable}. (Real-internet traffic does not cross the lab firewalls.)"
+            ),
+        )
+
+    cmd = ["wget", "-q", "-O", "-", "-T", "4", raw_url]
+    if parts.scheme == "https":
+        # weblab's cert is self-signed (generated at image build).
+        cmd.insert(1, "--no-check-certificate")
+    started = time.monotonic()
+    result = topology.exec(_active_scenario.name, req.node, cmd)
+    elapsed = round(time.monotonic() - started, 2)
+
+    ok = result["exit"] == 0
+    return {
+        "ok": ok,
+        "exit": result["exit"],
+        "html": result["stdout"] if ok else None,
+        "error": None if ok else (result["stderr"].strip() or f"wget exited {result['exit']}"),
+        "elapsed_s": elapsed,
+        "url": raw_url,
+        "node": req.node,
+        "server_node": server_node,
+        "container": result["container"],
+        "command": " ".join(cmd),
+    }
 
 
 @app.websocket("/ws/console/{scenario_name}/{node}")

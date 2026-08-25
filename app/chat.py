@@ -227,11 +227,29 @@ def call_ollama(model: str, messages: list[dict], options: dict | None = None) -
         return resp.json()
 
 
+def alias_map(scenario: Scenario) -> dict[str, str]:
+    """Scenario-declared hostname aliases -> node id, lowercased (e.g.
+    'example.com' -> 'pc1b'). Same names the hosts pass writes into /etc/hosts."""
+    result: dict[str, str] = {}
+    for node in scenario.nodes:
+        for alias in node.aliases:
+            result[alias.lower()] = node.id
+    return result
+
+
 def validate_node_args(args: dict, scenario: Scenario) -> str | None:
+    """Validate src/dst against the scenario — and canonicalize aliases IN PLACE
+    (a user says "block example.com"; the model passes it through) so every
+    downstream consumer sees the real node id, deterministically."""
     node_ids = {n.id for n in scenario.nodes}
+    aliases = alias_map(scenario)
     for field in ("src", "dst"):
         val = args.get(field)
         if val and val not in node_ids:
+            canonical = aliases.get(str(val).lower())
+            if canonical:
+                args[field] = canonical
+                continue
             return f"Unknown node '{val}'. Valid nodes: {sorted(node_ids)}"
     return None
 

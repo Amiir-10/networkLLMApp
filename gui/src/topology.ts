@@ -18,6 +18,7 @@ export interface DeviceNodeData {
   ip: string;        // primary IP for display ("" for L2 switches)
   role: NodeRole;
   ports: number[];
+  aliases: string[]; // hostnames served by this node (e.g. ["example.com"])
   [key: string]: unknown;
 }
 
@@ -169,6 +170,7 @@ export function buildTopology(graph: ScenarioGraph): BuiltTopology {
       ip: n.role === "switch" ? "" : primaryIp[n.id] ?? "",
       role: n.role as NodeRole,
       ports: n.ports ?? [],
+      aliases: n.aliases ?? [],
     },
   }));
 

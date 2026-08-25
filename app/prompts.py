@@ -63,16 +63,29 @@ def build_system_prompt(
         nodes_line = "Valid node IDs will be listed once a lab is running."
     else:
         node_descriptions = []
+        alias_notes = []
         for n in scenario.nodes:
             # L2 nodes (switches) have interfaces with no IP — skip the Nones.
             ips = ", ".join(iface.ip for iface in n.interfaces if iface.ip)
             descr = f"{n.id} ({n.role}, {ips})" if ips else f"{n.id} ({n.role}, L2/no IP)"
             node_descriptions.append(descr)
+            if n.aliases:
+                alias_notes.append(
+                    f"the website {' / '.join(n.aliases)} is hosted on node {n.id}"
+                )
         nodes_line = (
             f"Current scenario '{scenario.name}' has these nodes: "
             + "; ".join(node_descriptions)
             + "."
         )
+        if alias_notes:
+            # Websites map to nodes as DATA (not a nudge): "block example.com
+            # from pc1a" must become block_traffic(src=pc1a, dst=<that node>).
+            nodes_line += (
+                " Note: " + "; ".join(alias_notes) + ". When the user refers to "
+                "such a website, use its hosting node id in tool calls (blocking "
+                "web access = block tcp from the client node to the hosting node)."
+            )
 
     if active_drops is None:
         rules_line = ""

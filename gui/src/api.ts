@@ -33,6 +33,9 @@ export interface GraphNode {
   image: string;
   interfaces: GraphInterface[];
   ports: number[];
+  // Scenario-declared hostnames served by this node (e.g. ["example.com"]) —
+  // resolvable from every lab container over the firewalled data path.
+  aliases?: string[];
 }
 
 export interface ScenarioGraph {
@@ -199,4 +202,38 @@ export async function addRule(
 // WebSocket URL for a real PTY shell into a lab container (GET /ws/console/...).
 export function wsConsoleUrl(scenario: string, node: string): string {
   return `${WS_BASE}/ws/console/${scenario}/${node}`;
+}
+
+// Clear firewall rules. No argument = every firewall (the backend/runner
+// behavior, unchanged); with a firewall id = only that firewall's rules
+// (the console panel's "Clear rules" button).
+export async function flushRules(firewall?: string): Promise<unknown> {
+  const qs = firewall ? `?firewall=${encodeURIComponent(firewall)}` : "";
+  const res = await fetch(`${BASE}/rules/flush${qs}`, { method: "POST" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// ── Browser tab: a real page fetch from INSIDE a lab PC ───────────────────
+export interface BrowseResponse {
+  ok: boolean;
+  exit: number;
+  html: string | null;
+  error: string | null;
+  elapsed_s: number;
+  url: string;
+  node: string;
+  server_node: string | null;
+  container: string;
+  command: string;
+}
+
+export async function browse(node: string, url: string): Promise<BrowseResponse> {
+  const res = await fetch(`${BASE}/browse`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ node, url }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
 }

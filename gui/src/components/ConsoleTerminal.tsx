@@ -7,6 +7,11 @@ import { wsConsoleUrl } from "../api";
 interface Props {
   scenario: string;
   node: string;
+  // Typed + run automatically once the shell is up (e.g. firewalls show their
+  // live rule set on open — supervisor request 2026-08-25). Sent through the
+  // same input path as keystrokes, so what the viewer sees is a real command
+  // actually executing in the container.
+  autoCommand?: string;
 }
 
 type Status = "connecting" | "open" | "closed";
@@ -15,7 +20,7 @@ type Status = "connecting" | "open" | "closed";
 // the backend GET /ws/console/{scenario}/{node} WebSocket. Everything typed here
 // runs for real inside the container (ip, ping, firewall-cmd, vim, …). Remounts
 // (via a React key on {scenario}/{node}) tear the old ws/term down cleanly.
-export default function ConsoleTerminal({ scenario, node }: Props) {
+export default function ConsoleTerminal({ scenario, node, autoCommand }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<Status>("connecting");
 
@@ -45,10 +50,20 @@ export default function ConsoleTerminal({ scenario, node }: Props) {
       ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
     };
 
+    let autoTimer: number | undefined;
     ws.onopen = () => {
       setStatus("open");
       sendResize();
       term.focus();
+      if (autoCommand) {
+        // Small delay so the shell prompt has rendered first — the viewer sees
+        // the command being typed at a prompt, then its real output.
+        autoTimer = window.setTimeout(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "input", data: `${autoCommand}\n` }));
+          }
+        }, 600);
+      }
     };
     ws.onmessage = (ev) => {
       term.write(typeof ev.data === "string" ? ev.data : "");
@@ -76,10 +91,11 @@ export default function ConsoleTerminal({ scenario, node }: Props) {
     return () => {
       ro.disconnect();
       dataSub.dispose();
+      if (autoTimer !== undefined) window.clearTimeout(autoTimer);
       ws.close();
       term.dispose();
     };
-  }, [scenario, node]);
+  }, [scenario, node, autoCommand]);
 
   return (
     <div className="flex flex-col h-full min-h-0">

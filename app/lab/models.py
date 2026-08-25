@@ -55,6 +55,12 @@ class Node(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     launch: str | None = None
     ports: list[int] = Field(default_factory=list)
+    # Extra DNS-style names for this node (e.g. ["example.com"]). Each alias is
+    # written into every container's /etc/hosts pointing at this node's DATA-plane
+    # IP (same pass as the node names), so `wget http://example.com` inside a PC
+    # traverses the firewalled data path. The chat layer also resolves aliases in
+    # tool args to this node id, and the system prompt advertises them.
+    aliases: list[str] = Field(default_factory=list)
 
 
 class Scenario(BaseModel):
