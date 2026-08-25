@@ -62,19 +62,32 @@ idempotent — if anything fails, fix and re-run. At the end it prints:
   Password:  <generated, stored in scripts/showcase-password>
 ```
 
-Send the supervisor the link + password (the browser shows a standard login
-box; username can be anything). Verify the link yourself from a phone on
+Use the open-port link only for your own testing. Verify it from a phone on
 mobile data first — that proves it works outside your network.
 
-## 4. If the open port doesn't work — fallback link
+## 4. The EVENT link — cloudflare tunnel (mandatory, point 6)
+
+**The demo runs exclusively over the cloudflare tunnel**: the BearingPoint
+venue firewall passes only ports 80/443, so the raw vast.ai link (random high
+port) will NOT open there.
 
 ```bash
 scripts/vast-showcase.sh tunnel
 ```
 
 Starts a Cloudflare quick tunnel on the instance and prints an
-`https://….trycloudflare.com` link (same password). Caveat: that URL changes
-whenever the tunnel restarts — send it close to the event.
+`https://….trycloudflare.com` link (same password) — **this is the link to
+send the supervisor**. Caveat: the URL changes whenever the tunnel restarts —
+send it close to the event.
+
+Abuse protection is app-side (quick tunnels take no Cloudflare WAF/rate
+rules): the backend locks an IP after 5 failed passwords (until backend
+restart — `systemctl restart showcase-backend` unlocks) and rate-limits to 40
+requests / 10 s per IP (429 above that), keyed on `CF-Connecting-IP` so it
+sees real client addresses through the tunnel.
+
+Note: `up` also sideloads the vulnerability-scan tool (`tools-cache/` →
+`~/.local/bin/dockerscan` + CVE DB) — scans work on the instance now.
 
 ## 5. Event-day checklist
 

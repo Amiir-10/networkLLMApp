@@ -8,6 +8,7 @@ SAME functions — there is one copy of "how we talk to a container", not two.
 disable_ipv6() exists as the home for the IPv6 standing rule (Phase 2a); it is a
 no-op placeholder here so Phase 1 stays strictly behavior-preserving.
 """
+import ipaddress
 import subprocess
 import time
 
@@ -152,7 +153,27 @@ def configure_nodes(scenario_name: str, scenario: Scenario) -> list[str]:
                     r = docker_exec(container, cmd)
                     if r.returncode != 0:
                         warnings.append(f"{container}: {' '.join(cmd)} -> {r.stderr.strip()}")
-            continue  # no L3, no static routes, no launch on a switch
+            # WAN gateway switch (bridge_ip): L3 on the bridge + site routes +
+            # (with nat) MASQUERADE out eth0/mgmt — the lab's real internet
+            # uplink. The docker-provided default route via mgmt is deliberately
+            # KEPT here: it is how internet-bound traffic leaves this node.
+            if node.bridge_ip:
+                rb = docker_exec(container, ["ip", "addr", "add", node.bridge_ip, "dev", "br0"])
+                if rb.returncode != 0 and "File exists" not in rb.stderr:
+                    warnings.append(f"{container}: ip addr add {node.bridge_ip} dev br0 -> {rb.stderr.strip()}")
+                for route in node.routes:
+                    rr = docker_exec(container, ["ip", "route", "replace", route.to, "via", route.via])
+                    if rr.returncode != 0:
+                        warnings.append(f"{container}: ip route replace {route.to} via {route.via} -> {rr.stderr.strip()}")
+                if node.nat:
+                    rn = docker_exec(container, [
+                        "sh", "-c",
+                        "iptables -t nat -C POSTROUTING -o eth0 -j MASQUERADE 2>/dev/null "
+                        "|| iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE",
+                    ])
+                    if rn.returncode != 0:
+                        warnings.append(f"{container}: NAT masquerade -> {rn.stderr.strip()}")
+            continue  # no launch on a switch
 
         if node.role == "firewall":
             if not wait_for_firewalld(container):
@@ -175,6 +196,45 @@ def configure_nodes(scenario_name: str, scenario: Scenario) -> list[str]:
                     warnings.append(
                         f"{container}: ip route replace default via {iface.gateway} -> {r3.stderr.strip()}"
                     )
+        # Zero-trust LAN (scenario.force_gateway): strip the PC's connected-
+        # subnet route so even same-subnet peers are reached via the firewall
+        # gateway (hairpin) — a host route to the gateway keeps the default
+        # route resolvable. Order: host route first, then drop the connected
+        # route, so the default's next-hop never dangles. PCs only — the
+        # firewall itself must keep its connected LAN route to reach the PCs.
+        if node.role == "pc" and scenario.force_gateway:
+            for idx, iface in enumerate(node.interfaces, start=1):
+                if not (iface.ip and iface.gateway):
+                    continue
+                eth = f"eth{idx}"
+                net = ipaddress.ip_network(iface.ip, strict=False).with_prefixlen
+                for cmd in (["ip", "route", "replace", f"{iface.gateway}/32", "dev", eth],
+                            ["ip", "route", "del", net, "dev", eth]):
+                    r = docker_exec(container, cmd)
+                    if r.returncode != 0:
+                        warnings.append(f"{container}: {' '.join(cmd)} -> {r.stderr.strip()}")
+        # Personalised web page (supervisor request 2026-08-25): a PC that
+        # serves nginx greets with its own name instead of the stock page, so
+        # the Browser tab shows WHICH lab host answered. Best-effort: nodes
+        # without nginx (postgres) simply skip this.
+        if node.role == "pc":
+            page = (
+                "<!doctype html><html><head><meta charset='utf-8'>"
+                f"<title>{node.id}</title></head>"
+                "<body style='font-family:system-ui,sans-serif;background:#f8fafc;"
+                "display:flex;align-items:center;justify-content:center;height:95vh'>"
+                "<div style='text-align:center'>"
+                f"<h1 style='font-size:3em;color:#1e293b'>Hello from {node.id.upper()}</h1>"
+                f"<p style='color:#64748b'>This page is served by nginx inside the lab container "
+                f"<code>{node.id}</code>.</p></div></body></html>"
+            )
+            rh = docker_exec(container, [
+                "sh", "-c",
+                "[ -d /usr/share/nginx/html ] && cat > /usr/share/nginx/html/index.html "
+                f"<<'NLLM_HELLO'\n{page}\nNLLM_HELLO\ntrue",
+            ])
+            if rh.returncode != 0:
+                warnings.append(f"{container}: hello page -> {rh.stderr.strip()}")
         # Extra static routes (multi-subnet: reach a non-adjacent subnet via a
         # specific next-hop). Applied after interfaces so the next-hops are up.
         for route in node.routes:

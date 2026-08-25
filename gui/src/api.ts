@@ -67,6 +67,7 @@ export interface ParsedRule {
   action: "drop" | "accept" | "reject";
   raw: string;
   firewall?: string | null;  // which firewall enforces it (multi-fw scenarios)
+  dst_name?: string;         // website name a public dst_ip was resolved from
 }
 
 export interface RulesResponse {

@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from app.engines.topology import TopologyEngine, LabAlreadyRunning, LabNotFound
 from app.engines.security import SecurityEngine
 from app.lab.models import Scenario
-from app.chat import call_ollama, validate_node_args, dispatch_tool, MAX_TOOL_ITERATIONS, _node_ip_map, resolve_firewall, OLLAMA_URL, OLLAMA_NUM_CTX, salvage_content_tool_calls, alias_map
+from app.chat import call_ollama, validate_node_args, dispatch_tool, MAX_TOOL_ITERATIONS, _node_ip_map, resolve_firewall, OLLAMA_URL, OLLAMA_NUM_CTX, salvage_content_tool_calls, alias_map, EXTERNAL_IP_NAMES
 from app.prompts import build_system_prompt
 from app.metrics import MetricsCollector
 
@@ -62,9 +62,53 @@ def _cookie_ok(cookies: dict[str, str]) -> bool:
     return secrets.compare_digest(cookies.get(_AUTH_COOKIE, ""), _auth_token())
 
 
+# ── Abuse protection (supervisor request 2026-08-25, point 8) ─────────────
+# Both mechanisms key on the ORIGINAL client IP. Behind the cloudflare tunnel
+# every TCP connection comes from cloudflared on localhost, so the socket
+# address is useless — cloudflare passes the real client in CF-Connecting-IP
+# (X-Forwarded-For as a general-proxy fallback). Active only when
+# SHOWCASE_PASSWORD is set; local dev is untouched.
+MAX_AUTH_FAILURES = 5           # then the IP is locked until backend restart
+RATE_WINDOW_S = 10.0
+RATE_MAX_REQUESTS = 40          # per IP per window — generous for one human,
+                                # a bombardment script trips it immediately
+_auth_failures: dict[str, int] = {}
+_locked_ips: set[str] = set()
+_request_log: dict[str, list[float]] = {}
+
+
+def _client_ip(request) -> str:
+    h = request.headers
+    return (
+        h.get("cf-connecting-ip")
+        or (h.get("x-forwarded-for", "").split(",")[0].strip() or None)
+        or (request.client.host if request.client else "unknown")
+    )
+
+
+def _rate_limited(ip: str) -> bool:
+    now = time.monotonic()
+    log = _request_log.setdefault(ip, [])
+    while log and now - log[0] > RATE_WINDOW_S:
+        log.pop(0)
+    log.append(now)
+    if len(_request_log) > 10000:  # bound memory under address-spoofing floods
+        _request_log.clear()
+    return len(log) > RATE_MAX_REQUESTS
+
+
 @app.middleware("http")
 async def showcase_basic_auth(request: Request, call_next):
-    if not SHOWCASE_PASSWORD or _cookie_ok(request.cookies):
+    if not SHOWCASE_PASSWORD:
+        return await call_next(request)
+    ip = _client_ip(request)
+    if ip in _locked_ips:
+        return Response(status_code=403,
+                        content="Access blocked after too many failed login attempts.")
+    if _rate_limited(ip):
+        return Response(status_code=429, content="Too many requests — slow down.",
+                        headers={"Retry-After": "10"})
+    if _cookie_ok(request.cookies):
         return await call_next(request)
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("basic "):
@@ -73,11 +117,19 @@ async def showcase_basic_auth(request: Request, call_next):
         except Exception:
             password = ""
         if secrets.compare_digest(password, SHOWCASE_PASSWORD):
+            _auth_failures.pop(ip, None)
             response = await call_next(request)
             response.set_cookie(
                 _AUTH_COOKIE, _auth_token(), httponly=True, samesite="lax"
             )
             return response
+        # Wrong password (not merely missing): count it, lock at the limit.
+        _auth_failures[ip] = _auth_failures.get(ip, 0) + 1
+        if _auth_failures[ip] >= MAX_AUTH_FAILURES:
+            _locked_ips.add(ip)
+            print(f"[auth] {ip} LOCKED after {MAX_AUTH_FAILURES} failed attempts", flush=True)
+            return Response(status_code=403,
+                            content="Access blocked after too many failed login attempts.")
     return Response(
         status_code=401,
         headers={"WWW-Authenticate": 'Basic realm="networkLLMApp showcase"'},
@@ -319,8 +371,11 @@ def _describe_active_drops() -> list[str]:
     for r in parsed:
         if r.get("action") != "drop":
             continue
+        # Fall back to the website name a public IP was resolved from, so the
+        # model sees "pc1a -> example.com" rather than a bare address.
         src = ip_to_node.get(r.get("src_ip"), r.get("src_ip") or "any")
-        dst = ip_to_node.get(r.get("dst_ip"), r.get("dst_ip") or "any")
+        dst_ip = r.get("dst_ip")
+        dst = ip_to_node.get(dst_ip) or EXTERNAL_IP_NAMES.get(dst_ip) or dst_ip or "any"
         proto = r.get("proto") or "all"
         line = f"{src} -> {dst} ({proto})"
         # Label the enforcing firewall only when several exist, so a
@@ -360,7 +415,14 @@ def get_scenario(scenario_name: str) -> dict:
 def get_rules() -> dict:
     if not security.connected:
         return {"forward_rules": [], "zone_rules": [], "parsed": []}
-    return security.list_rules()
+    rules = security.list_rules()
+    # Label public-internet IPs with the website they were resolved from, so
+    # the GUI's rule chips read "pc1a → example.com" instead of a raw address.
+    for p in rules.get("parsed", []):
+        name = EXTERNAL_IP_NAMES.get(p.get("dst_ip") or "")
+        if name:
+            p["dst_name"] = name
+    return rules
 
 
 @app.post("/rules/flush")
@@ -416,6 +478,12 @@ def add_rule(req: RuleRequest) -> dict:
     ip_map = _node_ip_map(_active_scenario)
     src_ip = ip_map.get(req.src)
     dst_ip = ip_map.get(req.dst)
+    if dst_ip is None:
+        # The console form only offers lab nodes; an external hostname here
+        # (validate_node_args now lets those through for the LLM path) would
+        # otherwise fall through as dst=None = block EVERYTHING from src.
+        raise HTTPException(status_code=400,
+                            detail=f"'{req.dst}' is not a lab node — use the chat to block websites.")
     fw_id = req.firewall or resolve_firewall(src_ip, _active_scenario)
     result = security.block(src_ip, dst_ip, req.proto, req.port, fw_id=fw_id)
     return {"status": "added", "src": req.src, "dst": req.dst, "proto": req.proto,
@@ -424,7 +492,7 @@ def add_rule(req: RuleRequest) -> dict:
 
 class BrowseRequest(BaseModel):
     node: str  # the lab PC doing the browsing
-    url: str   # http[s]://<lab-host>[:port][/path] — lab hosts only
+    url: str   # http[s]://<host>[:port][/path] — lab hosts OR the real internet
 
 
 @app.post("/browse")
@@ -432,16 +500,14 @@ def browse(req: BrowseRequest) -> dict:
     """Fetch a web page FROM INSIDE a lab PC (the GUI's Browser tab).
 
     This is a REAL request, not a simulation: `wget` runs inside the source
-    container, resolves the hostname via the container's own /etc/hosts
-    (data-plane IPs — see write_data_plane_hosts), and the traffic crosses
-    the routed PC->switch->firewall path, so an active DROP rule visibly
-    kills the page load.
+    container and the traffic crosses the routed PC->switch->firewall path,
+    so an active DROP rule visibly kills the page load.
 
-    Targets are restricted to the lab's own hosts (node ids, scenario aliases
-    like example.com, or data IPs). Anything else is refused — traffic to the
-    real internet would leave via the containerlab management bridge, which
-    BYPASSES the lab firewalls, and a "blocked" site loading fine would be a
-    lie on stage.
+    Targets may be lab hosts (node names resolve via the container's own
+    /etc/hosts to data-plane IPs) or PUBLIC INTERNET sites: since the WAN-
+    Interconnect gateway (2026-08-25) the lab's default route runs over the
+    data plane through the firewalls to a NAT uplink, so a real site loads —
+    and blocks against it genuinely stop it — with nothing simulated.
     """
     if not _active_scenario:
         raise HTTPException(status_code=400, detail="No lab is running. Start a lab first.")
@@ -458,29 +524,16 @@ def browse(req: BrowseRequest) -> dict:
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise HTTPException(status_code=400, detail=f"Not a valid http/https URL: '{req.url}'")
 
-    # Lab-internal hosts only: node names, scenario aliases, and data-plane IPs.
+    # Label who serves this: a lab node, or the internet.
     ip_map = _node_ip_map(_active_scenario)
     aliases = alias_map(_active_scenario)
     host = parts.hostname.lower()
-    server_node = None
-    if host in ip_map:
-        server_node = host
-    elif host in aliases:
-        server_node = aliases[host]
-    else:
-        by_ip = {ip: node for node, ip in ip_map.items()}
-        server_node = by_ip.get(host)
-    if server_node is None:
-        reachable = sorted(set(list(aliases) + [n for n, _ in ip_map.items()]))
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"'{host}' is not part of the lab network. Reachable from a lab PC: "
-                f"{reachable}. (Real-internet traffic does not cross the lab firewalls.)"
-            ),
-        )
+    by_ip = {ip: node for node, ip in ip_map.items()}
+    server_node = (
+        host if host in ip_map else aliases.get(host) or by_ip.get(host) or "internet"
+    )
 
-    cmd = ["wget", "-q", "-O", "-", "-T", "4", raw_url]
+    cmd = ["wget", "-q", "-O", "-", "-T", "6", raw_url]
     if parts.scheme == "https":
         # weblab's cert is self-signed (generated at image build).
         cmd.insert(1, "--no-check-certificate")

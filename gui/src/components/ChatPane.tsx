@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { ChatResponse, ChatMessage } from "../api";
 
 interface Props {
@@ -82,7 +84,16 @@ export default function ChatPane({ messages, loading, labActive, onSend, onClear
               {msg.error && (
                 <p className="text-red-600 text-xs">{msg.error}</p>
               )}
-              {msg.content && <p className="whitespace-pre-wrap">{msg.content}</p>}
+              {/* Assistant replies render as real markdown (bold, lists,
+                  tables, code — supervisor request 2026-08-25, point 16);
+                  user text stays literal. */}
+              {msg.content && msg.role === "assistant" ? (
+                <div className="chat-markdown">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                </div>
+              ) : msg.content ? (
+                <p className="whitespace-pre-wrap">{msg.content}</p>
+              ) : null}
               {msg.toolCalls && msg.toolCalls.length > 0 && (
                 <div className="mt-2 space-y-1">
                   {msg.toolCalls.map((tc, j) => (

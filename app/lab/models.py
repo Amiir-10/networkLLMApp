@@ -61,11 +61,27 @@ class Node(BaseModel):
     # traverses the firewalled data path. The chat layer also resolves aliases in
     # tool args to this node id, and the system prompt advertises them.
     aliases: list[str] = Field(default_factory=list)
+    # --- WAN gateway (real internet through the firewalls, 2026-08-25) ---
+    # A switch with `bridge_ip` becomes an L3 gateway on its own bridge: br0
+    # gets this address, the node forwards, and its `routes` are applied (the
+    # site subnets back via the routers). With `nat` it also MASQUERADEs
+    # non-lab traffic out eth0 (the mgmt interface), where docker's NAT
+    # reaches the real internet — so internet-bound traffic crosses the lab
+    # firewalls first and DROP rules genuinely apply to public sites.
+    bridge_ip: str | None = Field(
+        default=None, pattern=r"^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$"
+    )
+    nat: bool = False
 
 
 class Scenario(BaseModel):
     name: str = Field(..., pattern=r"^[a-z][a-z0-9-]*$")
     description: str = ""
+    # Zero-trust LAN routing (supervisor request 2026-08-25): when true, PCs
+    # get NO connected-subnet route — only a host route to their gateway plus
+    # the default via it — so even same-subnet PC↔PC traffic hairpins through
+    # the firewall and can be blocked there. False = classic LAN behavior.
+    force_gateway: bool = False
     nodes: list[Node]
 
     @field_validator("nodes")

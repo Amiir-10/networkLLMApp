@@ -1,13 +1,19 @@
 name: two-subnet-ixp
 description: >-
-  Two mirror enterprise subnets peering through an ISP-style internet exchange.
-  Each subnet: 3 PCs on a LAN (10.10.1.0/24 and 10.20.1.0/24) behind an L2 switch,
-  an internal firewalld firewall, and an edge router. The two routers peer over a
-  shared IXP fabric (100.64.0.0/24). pc1/pc2 run a real web host serving HTTP
-  (TCP 80) AND HTTPS (TCP 443, self-signed TLS) plus a UDP echo service (UDP 9999);
-  pc3 runs real PostgreSQL (TCP 5432). Cross-subnet traffic routes PC -> switch ->
-  firewall -> router -> IXP -> router -> firewall -> switch -> PC, so every block
-  demoed here must be an A<->B pair (intra-subnet traffic never touches a firewall).
+  Two mirror enterprise subnets joined by a WAN-Interconnect fabric that is also
+  the lab's REAL internet uplink. Each subnet: 3 PCs on a LAN (10.10.1.0/24 and
+  10.20.1.0/24) behind an L2 switch, an internal firewalld firewall, and an edge
+  router. The two routers peer over the WAN-Interconnect (100.64.0.0/24), which
+  NATs to the public internet. pc1/pc2 run a real web host serving HTTP (TCP 80)
+  AND HTTPS (TCP 443, self-signed TLS) plus a UDP echo service (UDP 9999); pc3
+  runs real PostgreSQL (TCP 5432). Zero-trust routing (force_gateway): ALL PC
+  traffic — even to a same-subnet neighbour — hairpins through the local
+  firewall, so any pair can be blocked. Internet traffic routes PC -> switch ->
+  firewall -> router -> WAN-Interconnect -> internet and is equally blockable.
+
+# Every PC's traffic must traverse its firewall first (supervisor request):
+# no connected-subnet routes on PCs — the firewall gateway is the only next hop.
+force_gateway: true
 
 nodes:
   # ── Subnet A ────────────────────────────────────────────────────────────
@@ -64,11 +70,22 @@ nodes:
     routes:
       - {to: 10.10.1.0/24, via: 10.10.255.1}   # back to LAN-A via fwA
       - {to: 10.20.0.0/16, via: 100.64.0.2}    # everything in site B via routerB
+      - {to: 0.0.0.0/0, via: 100.64.0.254}     # internet via the WAN gateway
 
-  # ── IXP exchange fabric (shared L2 peering segment) ──────────────────────
+  # ── WAN-Interconnect fabric (shared peering segment + REAL internet uplink)
+  # Still bridges the two routers at L2, but also owns 100.64.0.254 on the
+  # bridge, routes the two sites back via their routers, and NATs everything
+  # else out its mgmt interface to the actual internet (wanlab = alpine +
+  # iptables). PCs can apk/apt-install and browse real sites — through the
+  # firewalls, so those flows are blockable like any lab traffic.
   - id: ixp
     role: switch
-    image: alpine:3.20
+    image: wanlab:latest
+    bridge_ip: 100.64.0.254/24
+    nat: true
+    routes:
+      - {to: 10.10.0.0/16, via: 100.64.0.1}    # site A back via routerA
+      - {to: 10.20.0.0/16, via: 100.64.0.2}    # site B back via routerB
     interfaces:
       - {to: routera}
       - {to: routerb}
@@ -83,6 +100,7 @@ nodes:
     routes:
       - {to: 10.20.1.0/24, via: 10.20.255.1}   # back to LAN-B via fwB
       - {to: 10.10.0.0/16, via: 100.64.0.1}    # everything in site A via routerA
+      - {to: 0.0.0.0/0, via: 100.64.0.254}     # internet via the WAN gateway
 
   - id: fwb
     role: firewall
@@ -106,11 +124,6 @@ nodes:
     idle: false          # nginx (HTTP 80 + HTTPS 443) runs as PID 1
     ports: [80, 443, 9999]
     launch: "socat UDP-LISTEN:9999,fork,reuseaddr EXEC:/bin/cat"   # persistent UDP echo
-    # pc1b doubles as the demo's "internet" website: every container resolves
-    # example.com to pc1b's DATA-plane IP (so browsing it crosses both
-    # firewalls), and weblab's nginx serves an Example-Domain-style page for
-    # this server_name. "Block example.com from pc1a" is a real, working block.
-    aliases: [example.com, www.example.com]
     interfaces:
       - {to: switchb, ip: 10.20.1.11/24, gateway: 10.20.1.1}
 

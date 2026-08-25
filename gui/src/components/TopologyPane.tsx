@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -32,10 +32,11 @@ function PcIcon() {
 }
 
 function ShieldIcon() {
+  // Blue firewall (supervisor request 2026-08-25, point 3).
   return (
     <svg width="50" height="56" viewBox="0 0 36 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M18 2 L4 10 L4 22 C4 30 10 36 18 38 C26 36 32 30 32 22 L32 10 Z" stroke="#64748b" strokeWidth="2" fill="#f8fafc" />
-      <path d="M18 10 L18 26 M12 18 L24 18" stroke="#94a3b8" strokeWidth="2.5" strokeLinecap="round" />
+      <path d="M18 2 L4 10 L4 22 C4 30 10 36 18 38 C26 36 32 30 32 22 L32 10 Z" stroke="#2563eb" strokeWidth="2" fill="#dbeafe" />
+      <path d="M18 10 L18 26 M12 18 L24 18" stroke="#3b82f6" strokeWidth="2.5" strokeLinecap="round" />
     </svg>
   );
 }
@@ -74,7 +75,7 @@ const handleStyle = { background: "transparent", border: "none", width: 1, heigh
 
 function ruleChipLabel(rule: ParsedRule, ipMap: Record<string, string>): string {
   const src = ipToNodeLabel(ipMap, rule.src_ip);
-  const dst = ipToNodeLabel(ipMap, rule.dst_ip);
+  const dst = rule.dst_name ?? ipToNodeLabel(ipMap, rule.dst_ip);
   let suffix = "";
   if (rule.proto) suffix = rule.port ? ` (${rule.proto}:${rule.port})` : ` (${rule.proto})`;
   return `${src} → ${dst}${suffix}`;
@@ -89,7 +90,7 @@ function CloudNode({ data }: NodeProps) {
       className="w-full h-full rounded-2xl border-2 border-dashed border-sky-300/70 bg-sky-50/40 pointer-events-none"
       style={{ boxSizing: "border-box" }}
     >
-      <span className="absolute top-1.5 left-3 text-xs font-mono font-semibold text-sky-500/80 tracking-wide">
+      <span className="absolute top-1.5 left-3 text-sm font-mono font-semibold text-sky-500/80 tracking-wide">
         {label}
       </span>
     </div>
@@ -124,8 +125,9 @@ function DeviceNode({ data }: NodeProps) {
       <Handle id="bs" type="source" position={Position.Bottom} style={handleStyle} />
       <Handle id="ls" type="source" position={Position.Left} style={handleStyle} />
       {icon}
-      <span className="text-lg font-semibold text-gray-700">{label}</span>
-      {ip && <span className="text-sm text-gray-400 font-mono">{ip}</span>}
+      {/* Bigger node labels (supervisor request 2026-08-25, point 1). */}
+      <span className="text-2xl font-semibold text-gray-700">{label}</span>
+      {ip && <span className="text-base text-gray-400 font-mono">{ip}</span>}
 
       {myDrops.length > 0 && (
         <div
@@ -233,14 +235,17 @@ function TopologyPaneInner({
   onNodeClick,
 }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [baseEdges, setBaseEdges] = useState<Edge[]>([]);
   const [highlights, setHighlights] = useState<Record<string, WireHighlight>>({});
   const { fitView } = useReactFlow();
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
 
   // Rebuild RF nodes when the scenario (topology) changes. Clouds first (low z),
   // then device nodes on top.
   useEffect(() => {
     if (!topology) {
       setNodes([]);
+      setBaseEdges([]);
       return;
     }
     setNodes([...topology.cloudNodes, ...topology.deviceNodes] as Node[]);
@@ -248,11 +253,38 @@ function TopologyPaneInner({
     // old viewport, which crops a graph with a different extent (vertical
     // two-subnet-ixp after horizontal central-hub). Re-fit once React Flow
     // has rendered the new nodes (double rAF: state commit, then layout).
+    // Edges are ALSO staged here, after the nodes have committed: handing
+    // them to React Flow in the same render that first creates the nodes made
+    // it silently drop edges whose named handles were not measured yet — the
+    // vertical firewall↔switch / switch↔middle-PC wires were invisible on
+    // first load until a node was dragged (supervisor point 9).
     const raf = requestAnimationFrame(() => {
-      requestAnimationFrame(() => fitView({ padding: 0.1, maxZoom: 1.25 }));
+      requestAnimationFrame(() => {
+        setBaseEdges(topology.edges);
+        fitView({ padding: 0.1, maxZoom: 1.25 });
+      });
     });
     return () => cancelAnimationFrame(raf);
   }, [topology, setNodes, fitView]);
+
+  // The pane lives inside a tab that is HIDDEN (display:none), not unmounted,
+  // when another view is active. If this pane initialised while hidden its
+  // viewport was computed at 0×0 — re-fit when the wrapper first gets real
+  // dimensions (width transition 0 → positive).
+  useEffect(() => {
+    const el = wrapperRef.current;
+    if (!el) return;
+    let lastWidth = el.getBoundingClientRect().width;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? 0;
+      if (lastWidth === 0 && w > 0) {
+        requestAnimationFrame(() => fitView({ padding: 0.1, maxZoom: 1.25 }));
+      }
+      lastWidth = w;
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [fitView]);
 
   // Ping animation: highlight every wire on the BFS path in sequence. If blocked,
   // stop at (and mark) the wire arriving at the first firewall on the path.
@@ -288,18 +320,17 @@ function TopologyPaneInner({
   }, [pingEvent, topology, onPingEventComplete]);
 
   const edges: Edge[] = useMemo(() => {
-    if (!topology) return [];
-    return topology.edges.map((e) => {
+    return baseEdges.map((e) => {
       const h = highlights[e.id];
       return h ? { ...e, data: { highlight: true, stopMarker: h.stopMarker } } : e;
     });
-  }, [topology, highlights]);
+  }, [baseEdges, highlights]);
 
   return (
     <LabReadyContext.Provider value={labReady}>
       <DropRulesContext.Provider value={dropRules}>
         <IpMapContext.Provider value={topology?.ipToNodeId ?? {}}>
-            <div className="h-full w-full">
+            <div className="h-full w-full" ref={wrapperRef}>
               <style>{`
                 @keyframes dash-flow { to { stroke-dashoffset: -24; } }
                 .edge-flow      { animation: dash-flow 1.5s linear infinite; }

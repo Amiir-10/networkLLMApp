@@ -28,10 +28,4 @@ RUN apk add --no-cache openssl socat lynx \
 
 COPY default.conf /etc/nginx/conf.d/default.conf
 
-# The demo's "internet website": nginx serves an Example-Domain-style page for
-# Host: example.com / www.example.com (see default.conf's second server block).
-# The scenario maps example.com to ONE web PC's data-plane IP via /etc/hosts
-# (Node.aliases), so browsing it from another PC crosses the firewalls.
-COPY example-index.html /usr/share/nginx/html-example/index.html
-
 EXPOSE 80 443

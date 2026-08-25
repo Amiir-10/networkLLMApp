@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import TopologyPane from "./TopologyPane";
 import ConsoleTerminal from "./ConsoleTerminal";
 import { addRule, flushRules, type ParsedRule } from "../api";
@@ -87,7 +87,7 @@ function FirewallPanel({
           <ul className="space-y-1">
             {myDrops.map((r) => (
               <li key={r.raw} className="font-mono text-xs px-1.5 py-0.5 bg-red-50 border border-red-200 text-red-700 rounded">
-                {ipToNodeLabel(ipMap, r.src_ip)} → {ipToNodeLabel(ipMap, r.dst_ip)}
+                {ipToNodeLabel(ipMap, r.src_ip)} → {r.dst_name ?? ipToNodeLabel(ipMap, r.dst_ip)}
                 {r.proto ? ` (${r.proto}${r.port ? `:${r.port}` : ""})` : ""}
               </li>
             ))}
@@ -133,8 +133,32 @@ interface Props {
 // The debug console: full-screen topology; click a node for a live PTY shell
 // (firewalls also get a rule view/add panel). Shares the shell's topology, so
 // it shows the selected scenario even before a lab is started.
+//
+// Console sessions PERSIST (supervisor request 2026-08-25, point 2): every
+// node whose shell was opened keeps its ConsoleTerminal mounted (hidden when
+// another node is selected), so its PTY, scrollback and running commands
+// survive switching nodes — and switching tabs, since App keeps this view
+// mounted. ✕ deselects but keeps the session; sessions reset when the lab
+// goes down (the PTYs are dead then anyway).
 export default function ConsoleView({ topology, labReady, scenario, dropRules, refetchRules }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
+  const [openConsoles, setOpenConsoles] = useState<string[]>([]);
+
+  // Lab stopped/reset: every PTY died with its container — drop the sessions
+  // so reopening a node starts a fresh shell instead of a dead terminal.
+  useEffect(() => {
+    if (!labReady) {
+      setOpenConsoles([]);
+      setSelected(null);
+    }
+  }, [labReady]);
+
+  const selectNode = (id: string) => {
+    setSelected(id);
+    if (labReady) {
+      setOpenConsoles((open) => (open.includes(id) ? open : [...open, id]));
+    }
+  };
 
   const nodeIds = useMemo(
     () => (topology ? topology.deviceNodes.filter((n) => n.data.role !== "switch").map((n) => n.id) : []),
@@ -144,6 +168,8 @@ export default function ConsoleView({ topology, labReady, scenario, dropRules, r
     () => topology?.deviceNodes.find((n) => n.id === selected)?.data.role ?? "pc",
     [topology, selected]
   );
+  const roleOf = (id: string) =>
+    topology?.deviceNodes.find((n) => n.id === id)?.data.role ?? "pc";
 
   return (
     <div className="flex-1 flex min-h-0">
@@ -154,7 +180,7 @@ export default function ConsoleView({ topology, labReady, scenario, dropRules, r
           dropRules={dropRules}
           pingEvent={null}
           onPingEventComplete={() => {}}
-          onNodeClick={setSelected}
+          onNodeClick={selectNode}
         />
         {!labReady && (
           <div className="absolute top-3 left-1/2 -translate-x-1/2 text-xs text-gray-400 bg-white/80 border border-gray-200 rounded-full px-3 py-1 pointer-events-none">
@@ -163,19 +189,20 @@ export default function ConsoleView({ topology, labReady, scenario, dropRules, r
         )}
       </div>
 
-      {selected && (
-        <div className="w-[28rem] border-l border-gray-200 flex flex-col min-h-0">
+      {/* The panel is hidden — not unmounted — when no node is selected, so
+          the open console sessions inside keep running. */}
+      <div className={selected ? "w-[28rem] border-l border-gray-200 flex flex-col min-h-0" : "hidden"}>
           <div className="px-3 py-2 border-b border-gray-200 flex items-center justify-between bg-gray-50">
             <span className="text-sm font-semibold text-gray-700">
               {selected}
               <span className="ml-2 text-xs font-normal text-gray-400">{selectedRole}</span>
             </span>
-            <button onClick={() => setSelected(null)} className="text-gray-400 hover:text-gray-700 text-sm" title="Close">✕</button>
+            <button onClick={() => setSelected(null)} className="text-gray-400 hover:text-gray-700 text-sm" title="Hide panel (the shell keeps running)">✕</button>
           </div>
 
           {labReady && scenario ? (
             <>
-              {selectedRole === "firewall" && (
+              {selected && selectedRole === "firewall" && (
                 <FirewallPanel
                   firewall={selected}
                   nodeIds={nodeIds}
@@ -184,24 +211,25 @@ export default function ConsoleView({ topology, labReady, scenario, dropRules, r
                   onChanged={refetchRules}
                 />
               )}
-              <div className="flex-1 min-h-0">
-                {/* key remounts the terminal (fresh ws/PTY) when the node changes.
-                    Firewalls auto-run the show-rules command on open. */}
-                <ConsoleTerminal
-                  key={selected}
-                  scenario={scenario}
-                  node={selected}
-                  autoCommand={selectedRole === "firewall" ? FW_RULES_CMD : undefined}
-                />
-              </div>
+              {/* EVERY opened console stays mounted; only the selected one is
+                  visible. Keyed per node so each keeps its own ws/PTY/history.
+                  Firewalls auto-run the show-rules command when first opened. */}
+              {openConsoles.map((id) => (
+                <div key={id} className={id === selected ? "flex-1 min-h-0" : "hidden"}>
+                  <ConsoleTerminal
+                    scenario={scenario}
+                    node={id}
+                    autoCommand={roleOf(id) === "firewall" ? FW_RULES_CMD : undefined}
+                  />
+                </div>
+              ))}
             </>
           ) : (
             <div className="flex-1 flex items-center justify-center p-6 text-center text-xs text-gray-400">
               Start the lab to open a live shell on <span className="font-mono mx-1">{selected}</span>.
             </div>
           )}
-        </div>
-      )}
+      </div>
     </div>
   );
 }

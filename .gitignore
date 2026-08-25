@@ -11,3 +11,4 @@ scripts/vast-instance.env
 scripts/showcase-password
 wheelhouse/
 images-cache/
+tools-cache/

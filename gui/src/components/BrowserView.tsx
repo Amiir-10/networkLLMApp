@@ -39,10 +39,15 @@ export default function BrowserView({ topology, labReady, state, setState }: Pro
     [topology]
   );
 
-  // Browsable sites: every alias (example.com) + every node serving HTTP :80.
+  // Browsable sites: REAL public-internet sites (the lab routes to the
+  // internet through the firewalls since 2026-08-25), plus every lab node
+  // serving HTTP :80 and any scenario aliases.
   const sites = useMemo(() => {
     if (!topology) return [];
-    const out: { url: string; label: string }[] = [];
+    const out: { url: string; label: string }[] = [
+      { url: "http://example.com", label: "example.com" },
+      { url: "http://neverssl.com", label: "neverssl.com" },
+    ];
     for (const n of topology.deviceNodes) {
       for (const a of n.data.aliases) out.push({ url: `http://${a}`, label: a });
       if (n.data.ports.includes(80)) out.push({ url: `http://${n.id}`, label: n.id });

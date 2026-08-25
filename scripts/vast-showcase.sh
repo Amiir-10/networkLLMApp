@@ -51,18 +51,22 @@ password() {
 print_access() {  # $1 = URL line ("SHOWCASE_URL=...")
   local url="${1#SHOWCASE_URL=}"
   echo
-  bold "=== SEND THIS TO THE SUPERVISOR ==="
+  bold "=== ACCESS ==="
   if [[ "$url" == "unknown" || -z "$url" ]]; then
-    echo "  Open port not mapped — get the fallback link with:"
-    echo "    scripts/vast-showcase.sh tunnel"
+    echo "  Open port not mapped."
   else
-    echo "  Link:      $url"
+    echo "  Direct link (testing only):  $url"
   fi
   echo "  Login:     any username (e.g. demo)"
   echo "  Password:  $(password)"
   echo
+  bold "  THE DEMO RUNS EXCLUSIVELY OVER THE CLOUDFLARE TUNNEL (point 6):"
+  echo "  the venue firewall (BearingPoint) only passes ports 80/443, so the"
+  echo "  raw vast.ai link (random high port) will NOT work there. Run:"
+  echo "    scripts/vast-showcase.sh tunnel"
+  echo "  and send the https://…trycloudflare.com link it prints."
+  echo
   echo "  Keep the instance running until after the event — destroying it kills the link."
-  echo "  If the link ever dies: scripts/vast-showcase.sh status   (then: tunnel)"
 }
 
 case "$CMD" in
@@ -77,6 +81,18 @@ up)
     [[ -d node_modules ]] || { [[ -f package-lock.json ]] && npm ci --silent || npm install --silent; }
     npm run build --silent )
   [[ -f gui/dist/index.html ]] || { echo "FAIL: GUI build produced no gui/dist/index.html"; exit 1; }
+
+  # dockerscan (the vulnerability_scan tool's binary + CVE DB) ships from this
+  # PC — it was never installed on instances, so scans errored "dockerscan not
+  # found" there (supervisor point 4). tools-cache/ is gitignored and rsynced
+  # with the repo; showcase-remote.sh installs it to ~/.local/bin + ~/.dockerscan.
+  mkdir -p tools-cache
+  if [[ -x "$HOME/.local/bin/dockerscan" ]]; then
+    cp -u "$HOME/.local/bin/dockerscan" tools-cache/dockerscan
+    [[ -f "$HOME/.dockerscan/cve-db.sqlite" ]] && cp -u "$HOME/.dockerscan/cve-db.sqlite" tools-cache/cve-db.sqlite
+  else
+    echo "WARN: ~/.local/bin/dockerscan missing on this PC — the instance's vulnerability_scan tool will not work."
+  fi
 
   bold ">>> [2/3] syncing repo -> $SSH_USER@$SSH_HOST:$REMOTE_REPO_DIR"
   rsync -az --delete \
@@ -144,7 +160,9 @@ status)
   print_access "$(grep -o 'SHOWCASE_URL=.*' <<<"$out" | tail -1)"
   ;;
 
-# ── tunnel: cloudflare quick-tunnel fallback link ─────────────────────────
+# ── tunnel: cloudflare quick tunnel — THE event link (port 443) ───────────
+# The demo runs exclusively over this link: the venue firewall only passes
+# 80/443. The URL rotates on tunnel restart — send it close to the event.
 tunnel)
   bold ">>> starting cloudflare quick tunnel on the instance"
   url=$("${SSH[@]}" '
@@ -172,13 +190,13 @@ EOF
     done
     echo "FAIL: no tunnel URL after 60s" >&2; exit 1')
   echo
-  bold "=== FALLBACK LINK (cloudflare) ==="
+  bold "=== EVENT LINK (cloudflare, port 443 — send THIS to the supervisor) ==="
   echo "  Link:      $url"
   echo "  Login:     any username (e.g. demo)"
   echo "  Password:  $(password)"
   echo
   echo "  NOTE: this URL changes every time the tunnel restarts — send it close to"
-  echo "  the event, and prefer the open-port link when it works."
+  echo "  the event. The venue firewall blocks the raw open-port link (point 6)."
   ;;
 
 # ── down ──────────────────────────────────────────────────────────────────

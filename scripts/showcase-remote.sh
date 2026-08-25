@@ -81,7 +81,7 @@ fi
 # the lab was verified with locally.
 if compgen -G "images-cache/*.tar.gz" >/dev/null && command -v docker >/dev/null; then
   need_load=0
-  for img in firewalld-fw:latest weblab:latest alpine:3.20 postgres:16-alpine; do
+  for img in firewalld-fw:latest weblab:latest wanlab:latest alpine:3.20 postgres:16-alpine; do
     docker image inspect "$img" >/dev/null 2>&1 || { need_load=1; break; }
   done
   if [[ $need_load -eq 1 ]]; then
@@ -92,6 +92,22 @@ if compgen -G "images-cache/*.tar.gz" >/dev/null && command -v docker >/dev/null
   else
     echo "  ok: all lab images already present"
   fi
+fi
+
+# ── 1b2. dockerscan (vulnerability_scan tool) ─────────────────────────────
+# The LLM's vulnerability_scan dispatches to the dockerscan binary + CVE DB
+# on THIS host (app/scanner.py, DOCKERSCAN_BIN=~/.local/bin/dockerscan). They
+# ship from the PC in tools-cache/ (supervisor point 4 — scans previously
+# failed on instances with "dockerscan not found").
+if [[ -f tools-cache/dockerscan ]]; then
+  mkdir -p "$HOME/.local/bin" "$HOME/.dockerscan"
+  install -m 0755 tools-cache/dockerscan "$HOME/.local/bin/dockerscan"
+  [[ -f tools-cache/cve-db.sqlite ]] && cp -u tools-cache/cve-db.sqlite "$HOME/.dockerscan/cve-db.sqlite"
+  "$HOME/.local/bin/dockerscan" --help >/dev/null 2>&1 \
+    && echo "  ok: dockerscan installed ($HOME/.local/bin/dockerscan)" \
+    || echo "  WARN: dockerscan binary present but not runnable on this host"
+else
+  echo "  WARN: tools-cache/dockerscan missing — vulnerability_scan will error here"
 fi
 
 # ── 1c. GPU driver self-heal ──────────────────────────────────────────────

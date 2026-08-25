@@ -22,6 +22,7 @@ import {
   type ChatMessage,
 } from "./api";
 import { buildTopology, type BuiltTopology } from "./topology";
+import bearingpointLogo from "./assets/bearingpoint.png";
 
 // Shown until the backend answers /models with what Ollama actually serves
 // (local service or GPU tunnel) — then replaced by the real list.
@@ -233,7 +234,10 @@ export default function App() {
     <div className="h-screen flex flex-col bg-white">
       {/* Unified top bar: app title · view tabs · scenario + lab controls · status */}
       <header className="border-b border-gray-200 px-4 py-2 flex items-center gap-4 bg-gray-50">
-        <span className="text-sm font-bold text-gray-800">networkLLMApp</span>
+        <span className="flex items-center gap-2">
+          <img src={bearingpointLogo} alt="BearingPoint" className="h-6 w-auto" />
+          <span className="text-sm font-bold text-gray-800">NetSec Zero-Trust Co-pilot</span>
+        </span>
 
         <nav className="flex items-center gap-1 bg-gray-100 rounded-md p-0.5">
           <button className={tabClass(view === "chat")} onClick={() => setView("chat")}>Chat</button>
@@ -279,7 +283,11 @@ export default function App() {
         </div>
       </header>
 
-      {view === "chat" ? (
+      {/* All three views stay MOUNTED and are toggled with CSS (hidden), so
+          switching tabs never destroys state — in particular the Console
+          view's open PTY shells keep their scrollback and live session
+          (supervisor request 2026-08-25, point 2). */}
+      <div className={view === "chat" ? "flex-1 flex flex-col min-h-0" : "hidden"}>
         <ChatView
           topology={topology}
           labReady={labReady}
@@ -294,7 +302,8 @@ export default function App() {
           onSend={sendChatMessage}
           onClear={clearChatHistory}
         />
-      ) : view === "console" ? (
+      </div>
+      <div className={view === "console" ? "flex-1 flex flex-col min-h-0" : "hidden"}>
         <ConsoleView
           topology={topology}
           labReady={labReady}
@@ -302,14 +311,15 @@ export default function App() {
           dropRules={dropRules}
           refetchRules={refetchRules}
         />
-      ) : (
+      </div>
+      <div className={view === "browser" ? "flex-1 flex flex-col min-h-0" : "hidden"}>
         <BrowserView
           topology={topology}
           labReady={labReady}
           state={browserState}
           setState={setBrowserState}
         />
-      )}
+      </div>
     </div>
   );
 }

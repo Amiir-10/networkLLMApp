@@ -80,9 +80,19 @@ class TopologyEngine:
                 "sysctls": sysctls,
             }
             # Firewalls AND routers forward IPv4 (routers are L3 transit between
-            # subnets; the firewall already did). Switches are L2 — no forwarding.
-            if node.role in ("firewall", "router"):
+            # subnets; the firewall already did). Switches are L2 — no forwarding,
+            # EXCEPT a WAN gateway switch (bridge_ip set), which routes/NATs.
+            if node.role in ("firewall", "router") or node.bridge_ip:
                 sysctls["net.ipv4.ip_forward"] = 1
+            # Zero-trust hairpin support: with force_gateway the firewall
+            # forwards same-subnet PC↔PC traffic back out its LAN interface.
+            # It must not "helpfully" ICMP-redirect the PCs onto the direct L2
+            # path (that would bypass the firewall after the first packet), and
+            # PCs must not honor such redirects from any hop.
+            sysctls["net.ipv4.conf.all.send_redirects"] = 0
+            sysctls["net.ipv4.conf.default.send_redirects"] = 0
+            sysctls["net.ipv4.conf.all.accept_redirects"] = 0
+            sysctls["net.ipv4.conf.default.accept_redirects"] = 0
             # Keep a bare host alive with sleep infinity, UNLESS its image runs a
             # service as PID 1 (idle=False: nginx, postgres) or it's the firewall
             # (firewalld is its PID 1). Routers/switches are idle alpine → kept alive.

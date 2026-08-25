@@ -197,11 +197,11 @@ export function buildTopology(graph: ScenarioGraph): BuiltTopology {
     // segments (not just "/24"): a subnet with hosts = LAN; one that only joins
     // routers = an IXP/peering fabric.
     const roles = ids.map((id) => byId[id]?.role);
-    const kind = roles.includes("pc")
-      ? "LAN"
-      : roles.filter((r) => r === "router").length >= 2
-      ? "IXP"
-      : "subnet";
+    // A subnet that only joins routers is the WAN-Interconnect peering fabric
+    // (supervisor request 2026-08-25, point 14: renamed from "IXP", and its
+    // label shows NO IP subnet).
+    const wan = !roles.includes("pc") && roles.filter((r) => r === "router").length >= 2;
+    const kind = roles.includes("pc") ? "LAN" : wan ? "WAN-Interconnect" : "subnet";
     cloudNodes.push({
       id: `cloud:${cidr}`,
       type: "cloud",
@@ -209,7 +209,7 @@ export function buildTopology(graph: ScenarioGraph): BuiltTopology {
       zIndex: 0,
       selectable: false,
       draggable: false,
-      data: { cidr, label: `${kind} · ${cidr}` },
+      data: { cidr, label: wan ? kind : `${kind} · ${cidr}` },
       style: {
         width: maxX - minX + CLOUD_PAD * 2,
         height: maxY - minY + CLOUD_PAD * 2 + CLOUD_LABEL_H,

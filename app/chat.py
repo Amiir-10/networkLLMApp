@@ -2,6 +2,7 @@ import ipaddress
 import json
 import os
 import re
+import socket
 
 import httpx
 
@@ -25,7 +26,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "block_traffic",
-            "description": "Block traffic between two nodes. Adds a firewall DROP rule. For a specific service set proto=tcp|udp and port. Known services in this lab: HTTP/web = proto tcp, port 80; HTTPS = proto tcp, port 443; PostgreSQL/database = proto tcp, port 5432; the UDP echo service = proto udp, port 9999. Use proto=icmp (no port) for ping.",
+            "description": "Block traffic between two nodes. Adds a firewall DROP rule. For a specific service set proto=tcp|udp and port. Known services in this lab: HTTP/web = proto tcp, port 80; HTTPS = proto tcp, port 443; PostgreSQL/database = proto tcp, port 5432; the UDP echo service = proto udp, port 9999. Use proto=icmp (no port) for ping. dst may also be a PUBLIC INTERNET hostname (e.g. example.com) — the rule then blocks that website's resolved IP addresses on the source's firewall.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -42,7 +43,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "allow_traffic",
-            "description": "Allow traffic between two nodes. Adds a firewall ACCEPT rule.",
+            "description": "Allow traffic between two nodes. Adds a firewall ACCEPT rule. dst may also be a public internet hostname (e.g. example.com) to re-enable access to a previously blocked website.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -227,6 +228,42 @@ def call_ollama(model: str, messages: list[dict], options: dict | None = None) -
         return resp.json()
 
 
+# Public-internet targets the user has blocked/allowed this session:
+# resolved IP -> hostname, so rule listings and the system prompt can label a
+# raw public IP with the website name it stands for.
+EXTERNAL_IP_NAMES: dict[str, str] = {}
+
+# A dst that is not a lab node may be a public website: a dotted hostname or a
+# literal IPv4. Anything else stays an "unknown node" error.
+_EXTERNAL_HOST_RE = re.compile(
+    r"^(?:\d{1,3}(?:\.\d{1,3}){3}|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+)$",
+    re.I,
+)
+
+
+def resolve_external(host: str, max_ips: int = 4) -> list[str]:
+    """Resolve a public hostname to its IPv4 addresses (the firewall rules
+    block IPs, not names). Resolution runs on the backend host; the lab
+    containers use the same upstream DNS via docker, so for stable sites
+    (example.com) both see identical addresses. Raises RuntimeError with a
+    plain message when the name does not resolve — dispatch turns that into a
+    tool error the model can relay."""
+    try:
+        infos = socket.getaddrinfo(host, None, family=socket.AF_INET,
+                                   type=socket.SOCK_STREAM)
+    except socket.gaierror as e:
+        raise RuntimeError(f"Could not resolve '{host}': {e}") from e
+    ips: list[str] = []
+    for info in infos:
+        ip = info[4][0]
+        if ip not in ips:
+            ips.append(ip)
+    ips = ips[:max_ips]
+    for ip in ips:
+        EXTERNAL_IP_NAMES[ip] = host
+    return ips
+
+
 def alias_map(scenario: Scenario) -> dict[str, str]:
     """Scenario-declared hostname aliases -> node id, lowercased (e.g.
     'example.com' -> 'pc1b'). Same names the hosts pass writes into /etc/hosts."""
@@ -240,17 +277,35 @@ def alias_map(scenario: Scenario) -> dict[str, str]:
 def validate_node_args(args: dict, scenario: Scenario) -> str | None:
     """Validate src/dst against the scenario — and canonicalize aliases IN PLACE
     (a user says "block example.com"; the model passes it through) so every
-    downstream consumer sees the real node id, deterministically."""
+    downstream consumer sees the real node id, deterministically.
+
+    `dst` may additionally be a PUBLIC INTERNET hostname or IP (the lab has a
+    real, firewalled internet uplink): it is normalized in place (scheme/path/
+    port stripped, lowercased) and left for dispatch_tool to resolve. `src`
+    must always be a lab node — traffic originates inside the lab."""
     node_ids = {n.id for n in scenario.nodes}
     aliases = alias_map(scenario)
     for field in ("src", "dst"):
         val = args.get(field)
-        if val and val not in node_ids:
-            canonical = aliases.get(str(val).lower())
-            if canonical:
-                args[field] = canonical
-                continue
-            return f"Unknown node '{val}'. Valid nodes: {sorted(node_ids)}"
+        if not val:
+            continue
+        v = str(val).strip()
+        if field == "dst":
+            # Models pass websites as URLs ("http://example.com/") — keep the
+            # bare host.
+            v = re.sub(r"^[a-z][a-z0-9+.-]*://", "", v, flags=re.I)
+            v = v.split("/")[0].split(":")[0]
+        if v in node_ids:
+            args[field] = v
+            continue
+        canonical = aliases.get(v.lower())
+        if canonical:
+            args[field] = canonical
+            continue
+        if field == "dst" and _EXTERNAL_HOST_RE.match(v):
+            args[field] = v.lower()
+            continue
+        return f"Unknown node '{val}'. Valid nodes: {sorted(node_ids)}"
     return None
 
 
@@ -265,18 +320,32 @@ def dispatch_tool(
 
     if name == "block_traffic":
         src_ip = ip_map.get(args["src"])
-        dst_ip = ip_map.get(args["dst"])
         proto = args.get("proto", "icmp")
         port = args.get("port")
         fw_id = args.get("firewall") or resolve_firewall(src_ip, scenario)
-        return security.block(src_ip, dst_ip, proto, port, fw_id=fw_id)
+        dst = args["dst"]
+        if dst in ip_map:
+            # Lab pair — unchanged single-rule path (experiment runner relies
+            # on this shape).
+            return security.block(src_ip, ip_map[dst], proto, port, fw_id=fw_id)
+        # Public website: one DROP per resolved IP, on the source-side firewall
+        # (internet-bound traffic crosses only the local fw before NAT).
+        dst_ips = resolve_external(dst)
+        results = [security.block(src_ip, d, proto, port, fw_id=fw_id) for d in dst_ips]
+        return {"blocked_website": dst, "resolved_ips": dst_ips,
+                "firewall": fw_id, "results": results}
 
     elif name == "allow_traffic":
         src_ip = ip_map.get(args["src"])
-        dst_ip = ip_map.get(args["dst"])
         proto = args.get("proto", "icmp")
         fw_id = args.get("firewall") or resolve_firewall(src_ip, scenario)
-        return security.allow(src_ip, dst_ip, proto, fw_id=fw_id)
+        dst = args["dst"]
+        if dst in ip_map:
+            return security.allow(src_ip, ip_map[dst], proto, fw_id=fw_id)
+        dst_ips = resolve_external(dst)
+        results = [security.allow(src_ip, d, proto, fw_id=fw_id) for d in dst_ips]
+        return {"allowed_website": dst, "resolved_ips": dst_ips,
+                "firewall": fw_id, "results": results}
 
     elif name == "flush_rules":
         return security.flush()
