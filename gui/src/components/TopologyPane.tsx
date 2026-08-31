@@ -20,13 +20,17 @@ import type { ParsedRule, PingEvent } from "../api";
 
 // --- SVG Icons ---
 
-function PcIcon() {
+function PcIcon({ vulnerable = false }: { vulnerable?: boolean }) {
+  // A vulnerable PC (point 12) turns red until the LLM fixes it.
+  const stroke = vulnerable ? "#dc2626" : "#64748b";
+  const screen = vulnerable ? "#fecaca" : "#e2e8f0";
+  const body = vulnerable ? "#fef2f2" : "#f8fafc";
   return (
     <svg width="54" height="48" viewBox="0 0 36 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <rect x="2" y="1" width="32" height="22" rx="2" stroke="#64748b" strokeWidth="2" fill="#f8fafc" />
-      <rect x="6" y="5" width="24" height="14" rx="1" fill="#e2e8f0" />
-      <rect x="13" y="24" width="10" height="3" fill="#94a3b8" />
-      <rect x="10" y="27" width="16" height="2" rx="1" fill="#94a3b8" />
+      <rect x="2" y="1" width="32" height="22" rx="2" stroke={stroke} strokeWidth="2" fill={body} />
+      <rect x="6" y="5" width="24" height="14" rx="1" fill={screen} />
+      <rect x="13" y="24" width="10" height="3" fill={vulnerable ? "#dc2626" : "#94a3b8"} />
+      <rect x="10" y="27" width="16" height="2" rx="1" fill={vulnerable ? "#dc2626" : "#94a3b8"} />
     </svg>
   );
 }
@@ -70,6 +74,7 @@ function SwitchIcon() {
 const LabReadyContext = createContext<boolean>(false);
 const DropRulesContext = createContext<ParsedRule[]>([]);
 const IpMapContext = createContext<Record<string, string>>({});
+const VulnerableContext = createContext<Set<string>>(new Set());
 
 const handleStyle = { background: "transparent", border: "none", width: 1, height: 1 };
 
@@ -99,16 +104,17 @@ function CloudNode({ data }: NodeProps) {
 
 // --- Device node ---
 
-function DeviceNode({ data }: NodeProps) {
+function DeviceNode({ data, id }: NodeProps) {
   const { label, ip, role } = data as DeviceNodeData;
   const dropRules = useContext(DropRulesContext);
   const ipMap = useContext(IpMapContext);
+  const vulnerable = useContext(VulnerableContext).has(id);
 
   let icon: React.ReactNode;
   if (role === "firewall") icon = <ShieldIcon />;
   else if (role === "router") icon = <RouterIcon />;
   else if (role === "switch") icon = <SwitchIcon />;
-  else icon = <PcIcon />;
+  else icon = <PcIcon vulnerable={vulnerable} />;
 
   // Drops are shown under the firewall that enforces them (rule.firewall).
   const myDrops =
@@ -126,24 +132,34 @@ function DeviceNode({ data }: NodeProps) {
       <Handle id="ls" type="source" position={Position.Left} style={handleStyle} />
       {icon}
       {/* Bigger node labels (supervisor request 2026-08-25, point 1). */}
-      <span className="text-2xl font-semibold text-gray-700">{label}</span>
+      <span className={`text-2xl font-semibold ${vulnerable ? "text-red-600" : "text-gray-700"}`}>
+        {label}
+        {vulnerable && <span className="text-red-600 font-bold"> (vulnerable)</span>}
+      </span>
       {ip && <span className="text-base text-gray-400 font-mono">{ip}</span>}
 
       {myDrops.length > 0 && (
+        // A compact OPAQUE card floated to the RIGHT of the firewall, into the
+        // empty horizontal space of the vertical topology — so the block-rule
+        // chips never overlap the node labels / link labels below the firewall
+        // (supervisor point 2). Opaque background + high z-index keep it legible
+        // even if it does cross something; capped with a "+N more" tail.
         <div
-          className="absolute top-full left-1/2 -translate-x-1/2 mt-2 flex flex-col gap-1 items-center pointer-events-none"
-          style={{ zIndex: 5 }}
+          className="absolute left-full top-1/2 -translate-y-1/2 ml-3 flex flex-col gap-1 items-start pointer-events-none rounded-lg border border-red-200 bg-white/95 shadow-md px-2 py-1.5"
+          style={{ zIndex: 40, maxWidth: "18rem" }}
         >
-          <span className="text-xs uppercase tracking-wide text-red-600/70 font-semibold">Active DROP</span>
-          {myDrops.slice(0, 6).map((r) => (
+          <span className="text-[0.7rem] uppercase tracking-wide text-red-600 font-bold">⛔ Blocking ({myDrops.length})</span>
+          {myDrops.slice(0, 4).map((r) => (
             <div
               key={r.raw}
-              className="px-2 py-0.5 bg-red-50 border border-red-300 text-red-700 rounded text-xs font-mono whitespace-nowrap shadow-sm"
+              className="px-2 py-0.5 bg-red-50 border border-red-300 text-red-700 rounded text-xs font-mono whitespace-nowrap"
             >
               {ruleChipLabel(r, ipMap)}
             </div>
           ))}
-          {myDrops.length > 6 && <span className="text-xs text-red-500">+{myDrops.length - 6} more</span>}
+          {myDrops.length > 4 && (
+            <span className="text-xs text-red-500 font-medium">+{myDrops.length - 4} more…</span>
+          )}
         </div>
       )}
     </div>
@@ -172,9 +188,13 @@ function WireEdge({ id, sourceX, sourceY, targetX, targetY, data }: EdgeProps) {
   let animationClass = "";
 
   if (!labReady) {
-    strokeColor = "#cbd5e1";
-    dashArray = "4 4";
-    opacity = 0.55;
+    // Clearly visible even before the lab is up (point 7: "the lines between
+    // the components are actually visible") — the old faint light-grey wires
+    // were nearly invisible against the dotted background.
+    strokeColor = "#94a3b8";
+    strokeWidth = 2.5;
+    dashArray = "6 4";
+    opacity = 0.9;
   } else if (d.highlight) {
     strokeColor = "#16a34a";
     strokeWidth = 3;
@@ -213,6 +233,7 @@ interface Props {
   topology: BuiltTopology | null;
   labReady: boolean;
   dropRules: ParsedRule[];
+  vulnerableNodes?: string[];
   pingEvent: PingEvent | null;
   onPingEventComplete: () => void;
   onNodeClick?: (nodeId: string) => void;
@@ -230,10 +251,12 @@ function TopologyPaneInner({
   topology,
   labReady,
   dropRules,
+  vulnerableNodes = [],
   pingEvent,
   onPingEventComplete,
   onNodeClick,
 }: Props) {
+  const vulnerableSet = useMemo(() => new Set(vulnerableNodes), [vulnerableNodes]);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [baseEdges, setBaseEdges] = useState<Edge[]>([]);
   const [highlights, setHighlights] = useState<Record<string, WireHighlight>>({});
@@ -267,23 +290,37 @@ function TopologyPaneInner({
     return () => cancelAnimationFrame(raf);
   }, [topology, setNodes, fitView]);
 
-  // The pane lives inside a tab that is HIDDEN (display:none), not unmounted,
-  // when another view is active. If this pane initialised while hidden its
-  // viewport was computed at 0×0 — re-fit when the wrapper first gets real
-  // dimensions (width transition 0 → positive).
+  // Re-fit whenever the pane's size changes MEANINGFULLY, not only on the
+  // 0→positive transition. Two cases this now covers (point 4): the pane
+  // initialises while its tab is hidden (0×0), AND — the actual bug — opening a
+  // console panel shrinks the topology's width, which previously left the graph
+  // at its old zoom so the panel visually overshadowed/cropped it. A debounced
+  // fitView keeps the whole graph in view at every width.
   useEffect(() => {
     const el = wrapperRef.current;
     if (!el) return;
     let lastWidth = el.getBoundingClientRect().width;
+    let lastHeight = el.getBoundingClientRect().height;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const ro = new ResizeObserver((entries) => {
       const w = entries[0]?.contentRect.width ?? 0;
-      if (lastWidth === 0 && w > 0) {
-        requestAnimationFrame(() => fitView({ padding: 0.1, maxZoom: 1.25 }));
-      }
+      const h = entries[0]?.contentRect.height ?? 0;
+      const changed =
+        (lastWidth === 0 && w > 0) ||
+        Math.abs(w - lastWidth) > 24 ||
+        Math.abs(h - lastHeight) > 24;
       lastWidth = w;
+      lastHeight = h;
+      if (changed && w > 0 && h > 0) {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(
+          () => requestAnimationFrame(() => fitView({ padding: 0.12, maxZoom: 1.25 })),
+          80,
+        );
+      }
     });
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => { ro.disconnect(); if (timer) clearTimeout(timer); };
   }, [fitView]);
 
   // Ping animation: highlight every wire on the BFS path in sequence. If blocked,
@@ -328,6 +365,7 @@ function TopologyPaneInner({
 
   return (
     <LabReadyContext.Provider value={labReady}>
+      <VulnerableContext.Provider value={vulnerableSet}>
       <DropRulesContext.Provider value={dropRules}>
         <IpMapContext.Provider value={topology?.ipToNodeId ?? {}}>
             <div className="h-full w-full" ref={wrapperRef}>
@@ -361,6 +399,7 @@ function TopologyPaneInner({
             </div>
         </IpMapContext.Provider>
       </DropRulesContext.Provider>
+      </VulnerableContext.Provider>
     </LabReadyContext.Provider>
   );
 }

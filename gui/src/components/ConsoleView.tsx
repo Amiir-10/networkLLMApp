@@ -6,6 +6,41 @@ import { ipToNodeLabel, type BuiltTopology } from "../topology";
 
 const PROTOS = ["icmp", "tcp", "udp"];
 
+// A drag-to-resize size (px) persisted to localStorage, so a pane the user
+// sized stays that way across reloads — same durability the console sessions
+// have (supervisor point 8). Returns the size and a pointer-down handler for
+// the drag handle.
+function usePersistentSize(
+  key: string, initial: number, min: number, max: number,
+  axis: "x" | "y", invert = false,
+) {
+  const [size, setSize] = useState<number>(() => {
+    try {
+      const v = localStorage.getItem(key);
+      if (v) return Math.min(max, Math.max(min, Number(v)));
+    } catch { /* private mode / blocked storage */ }
+    return initial;
+  });
+  const onPointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const start = axis === "x" ? e.clientX : e.clientY;
+    const startSize = size;
+    const move = (ev: PointerEvent) => {
+      const cur = axis === "x" ? ev.clientX : ev.clientY;
+      const delta = (invert ? -1 : 1) * (cur - start);
+      setSize(Math.min(max, Math.max(min, startSize + delta)));
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setSize((s) => { try { localStorage.setItem(key, String(s)); } catch { /* ignore */ } return s; });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  return [size, onPointerDown] as const;
+}
+
 // Typed + run automatically when a firewall's shell opens: the firewalld
 // forward policy (fwd-filter) is where every block/allow rich rule lives —
 // this is the real "show me the current rules" command (supervisor request).
@@ -127,6 +162,7 @@ interface Props {
   labReady: boolean;
   scenario: string | null;
   dropRules: ParsedRule[];
+  vulnerableNodes: string[];
   refetchRules: () => void;
 }
 
@@ -140,9 +176,14 @@ interface Props {
 // survive switching nodes — and switching tabs, since App keeps this view
 // mounted. ✕ deselects but keeps the session; sessions reset when the lab
 // goes down (the PTYs are dead then anyway).
-export default function ConsoleView({ topology, labReady, scenario, dropRules, refetchRules }: Props) {
+export default function ConsoleView({ topology, labReady, scenario, dropRules, vulnerableNodes, refetchRules }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
   const [openConsoles, setOpenConsoles] = useState<string[]>([]);
+  // Resizable, persisted panes (point 8): the console panel's width, and — when
+  // a firewall shell is open — the height of the rules list above the terminal,
+  // so a firewall with MANY rules can't push the shell out of view.
+  const [panelWidth, startWidthDrag] = usePersistentSize("console.panelWidth", 448, 320, 900, "x", true);
+  const [rulesHeight, startRulesDrag] = usePersistentSize("console.rulesHeight", 200, 72, 520, "y");
 
   // Lab stopped/reset: every PTY died with its container — drop the sessions
   // so reopening a node starts a fresh shell instead of a dead terminal.
@@ -178,6 +219,7 @@ export default function ConsoleView({ topology, labReady, scenario, dropRules, r
           topology={topology}
           labReady={labReady}
           dropRules={dropRules}
+          vulnerableNodes={vulnerableNodes}
           pingEvent={null}
           onPingEventComplete={() => {}}
           onNodeClick={selectNode}
@@ -189,9 +231,21 @@ export default function ConsoleView({ topology, labReady, scenario, dropRules, r
         )}
       </div>
 
+      {/* Drag handle to resize the console panel width (point 8). */}
+      {selected && (
+        <div
+          onPointerDown={startWidthDrag}
+          title="Drag to resize the console panel"
+          className="w-1.5 shrink-0 cursor-col-resize bg-gray-200 hover:bg-blue-400 transition-colors"
+        />
+      )}
+
       {/* The panel is hidden — not unmounted — when no node is selected, so
           the open console sessions inside keep running. */}
-      <div className={selected ? "w-[28rem] border-l border-gray-200 flex flex-col min-h-0" : "hidden"}>
+      <div
+        style={selected ? { width: panelWidth } : undefined}
+        className={selected ? "shrink-0 border-l border-gray-200 flex flex-col min-h-0" : "hidden"}
+      >
           <div className="px-3 py-2 border-b border-gray-200 flex items-center justify-between bg-gray-50">
             <span className="text-sm font-semibold text-gray-700">
               {selected}
@@ -203,13 +257,24 @@ export default function ConsoleView({ topology, labReady, scenario, dropRules, r
           {labReady && scenario ? (
             <>
               {selected && selectedRole === "firewall" && (
-                <FirewallPanel
-                  firewall={selected}
-                  nodeIds={nodeIds}
-                  ipMap={topology?.ipToNodeId ?? {}}
-                  dropRules={dropRules}
-                  onChanged={refetchRules}
-                />
+                <>
+                  {/* Rules list gets its OWN resizable, scrollable band so many
+                      rules never push the shell below out of view (point 8). */}
+                  <div style={{ height: rulesHeight }} className="shrink-0 overflow-y-auto">
+                    <FirewallPanel
+                      firewall={selected}
+                      nodeIds={nodeIds}
+                      ipMap={topology?.ipToNodeId ?? {}}
+                      dropRules={dropRules}
+                      onChanged={refetchRules}
+                    />
+                  </div>
+                  <div
+                    onPointerDown={startRulesDrag}
+                    title="Drag to resize the rules / shell split"
+                    className="h-1.5 shrink-0 cursor-row-resize bg-gray-200 hover:bg-blue-400 transition-colors"
+                  />
+                </>
               )}
               {/* EVERY opened console stays mounted; only the selected one is
                   visible. Keyed per node so each keeps its own ws/PTY/history.

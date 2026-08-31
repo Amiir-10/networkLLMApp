@@ -81,7 +81,7 @@ fi
 # the lab was verified with locally.
 if compgen -G "images-cache/*.tar.gz" >/dev/null && command -v docker >/dev/null; then
   need_load=0
-  for img in firewalld-fw:latest weblab:latest wanlab:latest alpine:3.20 postgres:16-alpine; do
+  for img in firewalld-fw:latest weblab:latest weblab-vuln:latest wanlab:latest alpine:3.20 postgres:16-alpine; do
     docker image inspect "$img" >/dev/null 2>&1 || { need_load=1; break; }
   done
   if [[ $need_load -eq 1 ]]; then
@@ -176,6 +176,11 @@ After=network-online.target docker.service ollama.service
 
 [Service]
 WorkingDirectory=$REPO_ROOT
+# HOME must be set: the vulnerability scanner (dockerscan) reads its CVE DB from
+# ~/.dockerscan/cve-db.sqlite via Go's os.UserHomeDir(), which errors "user home
+# directory not defined" under systemd if HOME is unset — the scan then reports
+# no data. $HOME here is the instance user that installed dockerscan (root).
+Environment=HOME=$HOME
 Environment=SHOWCASE_PASSWORD=$SHOWCASE_PASSWORD
 Environment=SHOWCASE_MODEL=$MODEL
 ExecStart=$REPO_ROOT/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $PORT
@@ -252,6 +257,44 @@ if ! command -v cloudflared >/dev/null; then
   fi
 else
   echo "  ok: cloudflared present"
+fi
+
+# ── 4b. Network abuse hardening on the direct-IP path (supervisor point 6) ─
+# The EVENT link is the Cloudflare tunnel, and cloudflared reaches the backend
+# over LOOPBACK — Cloudflare itself absorbs volumetric/DoS traffic and the
+# origin exposes no public port on that path, so these rules deliberately do
+# NOT touch loopback (they must never throttle the tunnel). They protect the
+# BACKUP direct-IP:port path (http://IP:EXT_PORT) against connection floods and
+# high burst rates. App-layer defences (per-IP 5-strike lockout + 40 req/10s
+# rate limit, CF-Connecting-IP aware) run on BOTH paths. Best-effort: skipped
+# cleanly if iptables/modules are unavailable on the instance.
+bold ">>> [4b/5] network abuse hardening (iptables, direct-IP path)"
+if command -v iptables >/dev/null 2>&1 && iptables -L >/dev/null 2>&1; then
+  GUARD=NLLM_GUARD
+  # Idempotent: (re)build our own chain, leave the rest of the ruleset alone.
+  iptables -N "$GUARD" 2>/dev/null || iptables -F "$GUARD"
+  # 1. Cap concurrent connections per source IP (a slowloris / socket-exhaust
+  #    flood) — >40 half/whole-open conns from one IP is not one human.
+  iptables -A "$GUARD" -p tcp -m connlimit --connlimit-above 40 --connlimit-mask 32 -j REJECT --reject-with tcp-reset 2>/dev/null || true
+  # 2. Cap the NEW-connection RATE per source IP (burst floods) — 60/min, allow
+  #    a burst of 40 so a normal page's parallel asset loads pass.
+  iptables -A "$GUARD" -p tcp -m hashlimit --hashlimit-name nllm_new \
+    --hashlimit-mode srcip --hashlimit-above 60/min --hashlimit-burst 40 \
+    -j DROP 2>/dev/null || true
+  iptables -A "$GUARD" -j RETURN
+  # Hook: only NEW TCP connections to the backend port, and NEVER loopback
+  # (the tunnel) — remove any prior copy first so re-runs don't stack it.
+  iptables -D INPUT ! -i lo -p tcp --dport "$PORT" -m conntrack --ctstate NEW -j "$GUARD" 2>/dev/null || true
+  iptables -A INPUT ! -i lo -p tcp --dport "$PORT" -m conntrack --ctstate NEW -j "$GUARD"
+  # Drop obviously bogus packets (INVALID conntrack state) to the port.
+  iptables -D INPUT ! -i lo -p tcp --dport "$PORT" -m conntrack --ctstate INVALID -j DROP 2>/dev/null || true
+  iptables -A INPUT ! -i lo -p tcp --dport "$PORT" -m conntrack --ctstate INVALID -j DROP
+  # Rate-limit ICMP echo (ping) floods to the host.
+  iptables -D INPUT -p icmp --icmp-type echo-request -m limit --limit 5/s --limit-burst 10 -j ACCEPT 2>/dev/null || true
+  iptables -A INPUT -p icmp --icmp-type echo-request -m limit --limit 5/s --limit-burst 10 -j ACCEPT
+  echo "  ok: connlimit(40)/rate(60·min,burst40)/invalid-drop on :$PORT, icmp 5/s (loopback tunnel exempt)"
+else
+  echo "  WARN: iptables unavailable — relying on app-layer lockout + rate limit only"
 fi
 
 # ── 5. The public URL ─────────────────────────────────────────────────────

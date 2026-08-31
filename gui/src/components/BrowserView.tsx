@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { browse, type BrowseResponse } from "../api";
+import { browse, proxyUrl, type BrowseResponse } from "../api";
 import type { BuiltTopology } from "../topology";
 
 // State lives at App level so the last-visited page survives switching to the
@@ -149,11 +149,22 @@ export default function BrowserView({ topology, labReady, state, setState }: Pro
           <div className="flex-1 flex items-center justify-center text-sm text-gray-400">
             Loading {host} from {node}…
           </div>
-        ) : r && r.ok && r.html !== null ? (
+        ) : r && r.ok ? (
+          // Render the real page through the backend proxy: it re-fetches the
+          // page AND its assets from inside the PC and serves them same-origin,
+          // so CSS and JS load. allow-scripts runs the page's JS (#11);
+          // allow-same-origin lets it fetch its proxied assets; the frame stays
+          // sandboxed off from the parent app.
           <iframe
             title="lab-page"
-            sandbox=""
-            srcDoc={r.html}
+            key={`${r.node}:${r.url}`}
+            // allow-scripts runs the page's JS (#11); allow-same-origin is
+            // required so the page's proxied assets (/proxy/…) carry the
+            // showcase auth cookie and load. The frame can't reach the parent
+            // app's DOM. (For a hardened isolation story, the in-container real
+            // browser — option B — is the documented follow-up.)
+            sandbox="allow-scripts allow-same-origin"
+            src={proxyUrl(r.node, r.url)}
             className="flex-1 w-full bg-white"
           />
         ) : r && !r.ok ? (

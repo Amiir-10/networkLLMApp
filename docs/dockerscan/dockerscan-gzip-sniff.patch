@@ -1,0 +1,21 @@
+diff --git a/pkg/docker/client.go b/pkg/docker/client.go
+index a4e5cdb..afa1fd3 100644
+--- a/pkg/docker/client.go
++++ b/pkg/docker/client.go
+@@ -357,9 +357,13 @@ func (c *Client) processLayer(layerPath string, callback func(FileInfo, io.Reade
+ 
+ 	var reader io.Reader = file
+ 
+-	// Check if gzipped
+-	if strings.HasSuffix(layerPath, ".gz") {
+-		gzReader, err := gzip.NewReader(file)
++	// Check if gzipped. Layer blobs from docker's containerd image store are
++	// gzip-compressed OCI blobs with NO .gz suffix (blobs/sha256/<digest>),
++	// so sniff the magic bytes instead of trusting the file name.
++	br := bufio.NewReader(file)
++	reader = br
++	if magic, err := br.Peek(2); err == nil && magic[0] == 0x1f && magic[1] == 0x8b {
++		gzReader, err := gzip.NewReader(br)
+ 		if err != nil {
+ 			return err
+ 		}

@@ -6,6 +6,7 @@ import {
   fetchHealth,
   fetchModels,
   fetchRules,
+  fetchVulnerable,
   fetchScenarios,
   fetchScenario,
   startLab,
@@ -28,6 +29,7 @@ import bearingpointLogo from "./assets/bearingpoint.png";
 // (local service or GPU tunnel) — then replaced by the real list.
 const FALLBACK_MODELS = ["llama3.1:8b", "qwen2.5-coder:7b"];
 const RULE_MUTATING_TOOLS = new Set(["block_traffic", "allow_traffic", "flush_rules"]);
+const VULN_TOOLS = new Set(["vulnerability_scan", "run_command"]);
 
 type View = "chat" | "console" | "browser";
 
@@ -47,6 +49,9 @@ export default function App() {
   const [labLoading, setLabLoading] = useState(false);
   const [labError, setLabError] = useState<string | null>(null);
   const [firewallRules, setFirewallRules] = useState<ParsedRule[]>([]);
+  // Node ids flagged vulnerable by a scan (point 12): the topology paints these
+  // red with a "(vulnerable)" label until an LLM fix (run_command) clears them.
+  const [vulnerableNodes, setVulnerableNodes] = useState<string[]>([]);
   const [pingEvent, setPingEvent] = useState<PingEvent | null>(null);
   // Chat conversation lives here, not in ChatPane, so it survives switching the
   // chat<->console tabs within a session (ChatPane unmounts on tab change; App
@@ -123,9 +128,22 @@ export default function App() {
     }
   }, [labReady]);
 
+  const refetchVulnerable = useCallback(async () => {
+    if (!labReady) {
+      setVulnerableNodes([]);
+      return;
+    }
+    try {
+      setVulnerableNodes(await fetchVulnerable());
+    } catch {
+      /* best-effort; keep previous */
+    }
+  }, [labReady]);
+
   useEffect(() => {
     refetchRules();
-  }, [refetchRules]);
+    refetchVulnerable();
+  }, [refetchRules, refetchVulnerable]);
 
   const dropRules = useMemo(() => firewallRules.filter((r) => r.action === "drop"), [firewallRules]);
 
@@ -179,6 +197,9 @@ export default function App() {
   const handleChatComplete = useCallback(
     (toolCalls: ToolCallResult[]) => {
       if (toolCalls.some((tc) => RULE_MUTATING_TOOLS.has(tc.tool))) refetchRules();
+      // A scan flags vulnerable nodes; run_command may fix one — either changes
+      // which nodes are red, so refresh the vulnerable set after those tools.
+      if (toolCalls.some((tc) => VULN_TOOLS.has(tc.tool))) refetchVulnerable();
       const ping = [...toolCalls].reverse().find((tc) => tc.tool === "ping_test");
       if (ping && ping.args && ping.result && !ping.error) {
         const args = ping.args as { src?: string; dst?: string };
@@ -189,7 +210,7 @@ export default function App() {
         }
       }
     },
-    [refetchRules]
+    [refetchRules, refetchVulnerable]
   );
 
   const handlePingEventComplete = useCallback(() => setPingEvent(null), []);
@@ -231,7 +252,10 @@ export default function App() {
     }`;
 
   return (
-    <div className="h-screen flex flex-col bg-white">
+    // pb keeps the console/fit-button off the very bottom edge of the screen —
+    // the supervisor's laptop had them flush against it (point 9). Percentage
+    // (vh) so it scales with the display.
+    <div className="h-screen flex flex-col bg-white pb-[1.2vh]">
       {/* Unified top bar: app title · view tabs · scenario + lab controls · status */}
       <header className="border-b border-gray-200 px-4 py-2 flex items-center gap-4 bg-gray-50">
         <span className="flex items-center gap-2">
@@ -292,6 +316,7 @@ export default function App() {
           topology={topology}
           labReady={labReady}
           dropRules={dropRules}
+          vulnerableNodes={vulnerableNodes}
           pingEvent={pingEvent}
           onPingEventComplete={handlePingEventComplete}
           model={model}
@@ -309,6 +334,7 @@ export default function App() {
           labReady={labReady}
           scenario={scenario}
           dropRules={dropRules}
+          vulnerableNodes={vulnerableNodes}
           refetchRules={refetchRules}
         />
       </div>

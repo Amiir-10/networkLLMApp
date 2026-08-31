@@ -19,7 +19,7 @@ nodes:
   # ── Subnet A ────────────────────────────────────────────────────────────
   - id: pc1a
     role: pc
-    image: weblab:latest
+    image: weblab-vuln:latest   # DELIBERATELY vulnerable (Alpine 3.14 / OpenSSL 1.1.1)
     idle: false          # nginx (HTTP 80 + HTTPS 443) runs as PID 1
     ports: [80, 443, 9999]
     launch: "socat UDP-LISTEN:9999,fork,reuseaddr EXEC:/bin/cat"   # persistent UDP echo

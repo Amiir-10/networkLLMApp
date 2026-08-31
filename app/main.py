@@ -12,7 +12,7 @@ import subprocess
 import termios
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urljoin, quote, unquote
 
 import httpx
 import yaml
@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from app.engines.topology import TopologyEngine, LabAlreadyRunning, LabNotFound
 from app.engines.security import SecurityEngine
 from app.lab.models import Scenario
-from app.chat import call_ollama, validate_node_args, dispatch_tool, MAX_TOOL_ITERATIONS, _node_ip_map, resolve_firewall, OLLAMA_URL, OLLAMA_NUM_CTX, salvage_content_tool_calls, alias_map, EXTERNAL_IP_NAMES
+from app.chat import call_ollama, validate_node_args, dispatch_tool, MAX_TOOL_ITERATIONS, _node_ip_map, resolve_firewall, OLLAMA_URL, OLLAMA_NUM_CTX, salvage_content_tool_calls, alias_map, EXTERNAL_IP_NAMES, vulnerable_nodes, SCANNED_NODES
 from app.prompts import build_system_prompt
 from app.metrics import MetricsCollector
 
@@ -97,6 +97,16 @@ def _rate_limited(ip: str) -> bool:
     return len(log) > RATE_MAX_REQUESTS
 
 
+# Paths that legitimately fire MANY requests in a short burst and must NOT be
+# rate-limited, or the app throttles its own normal use: the browser proxy (one
+# page = dozens–hundreds of asset sub-requests) and the health/state polls the
+# GUI runs on a timer. A heavy SPA (x.com) loading through /proxy otherwise trips
+# the 40/10s limit, which then also 429s /health — the GUI reads that as the
+# backend being down and appears to "crash-loop" (it never actually crashes).
+# The rate limit still guards the real abuse surface (login, /chat, /lab/*).
+_RATE_EXEMPT_PREFIXES = ("/proxy", "/health", "/vulnerable", "/rules", "/scenarios", "/assets", "/models")
+
+
 @app.middleware("http")
 async def showcase_basic_auth(request: Request, call_next):
     if not SHOWCASE_PASSWORD:
@@ -105,7 +115,9 @@ async def showcase_basic_auth(request: Request, call_next):
     if ip in _locked_ips:
         return Response(status_code=403,
                         content="Access blocked after too many failed login attempts.")
-    if _rate_limited(ip):
+    path = request.url.path
+    rate_exempt = path.startswith(_RATE_EXEMPT_PREFIXES)
+    if not rate_exempt and _rate_limited(ip):
         return Response(status_code=429, content="Too many requests — slow down.",
                         headers={"Retry-After": "10"})
     if _cookie_ok(request.cookies):
@@ -263,6 +275,7 @@ def _deploy_and_connect(scenario: Scenario, scenario_name: str) -> dict:
 def lab_start(scenario_name: str) -> dict:
     global _active_scenario, _conversation_history
     _conversation_history = []
+    SCANNED_NODES.clear()  # nothing is "vulnerable" until scanned in the new lab
     scenario = _load_scenario(scenario_name)
     try:
         result = _deploy_and_connect(scenario, scenario_name)
@@ -299,6 +312,7 @@ def lab_start(scenario_name: str) -> dict:
 def lab_stop(scenario_name: str) -> dict:
     global _active_scenario, _conversation_history
     _conversation_history = []
+    SCANNED_NODES.clear()
     try:
         topology.stop(scenario_name)
     except LabNotFound as exc:
@@ -324,6 +338,7 @@ def lab_reset(scenario_name: str) -> dict:
 
     # 1. Clear in-memory LLM state (Ollama is stateless per request).
     _conversation_history = []
+    SCANNED_NODES.clear()
     # 2. Best-effort destroy of whatever is currently up.
     try:
         topology.stop(scenario_name)
@@ -411,6 +426,20 @@ def get_scenario(scenario_name: str) -> dict:
     return _load_scenario(scenario_name).model_dump()
 
 
+@app.get("/vulnerable")
+def get_vulnerable() -> dict:
+    """Node ids currently flagged vulnerable (point 12) — the topology view
+    paints these red with a "(vulnerable)" label. Read live from the running
+    containers, so it reflects an LLM fix (run_command upgrade) immediately.
+    The GUI refetches this on lab-ready and after any chat tool call."""
+    if _active_scenario is None:
+        return {"vulnerable": []}
+    try:
+        return {"vulnerable": vulnerable_nodes(_active_scenario, topology)}
+    except Exception:
+        return {"vulnerable": []}
+
+
 @app.get("/rules")
 def get_rules() -> dict:
     if not security.connected:
@@ -490,6 +519,204 @@ def add_rule(req: RuleRequest) -> dict:
             "port": req.port, "firewall": fw_id, "result": result}
 
 
+# ── In-lab browsing proxy (points 5/10/11): render real sites properly ─────
+# The old Browser tab injected a one-shot `wget -O -` into an `<iframe srcDoc
+# sandbox="">`: relative asset URLs pointed nowhere (no CSS/JS), scripts were
+# blocked by sandbox="", and a large/redirecting response (bearingpoint.com)
+# with no size cap could OOM the worker and take the backend down. This proxy
+# fixes all three: every page AND asset is fetched from inside the chosen PC
+# (curl, HARD-capped size + timeout so nothing can OOM), served back same-origin
+# so the browser has no CORS problem, and HTML resource URLs are rewritten to
+# point back through the proxy — so CSS, JS and images load and run. The traffic
+# still originates in the PC and crosses the firewalls, so blocks still work.
+PROXY_MAX_BYTES = 8_000_000       # hard cap per fetch (head -c) — OOM guard
+PROXY_TIMEOUT_S = 12
+_PROXY_UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+             "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+
+_CT_BY_EXT = {
+    ".css": "text/css", ".js": "text/javascript", ".mjs": "text/javascript",
+    ".json": "application/json", ".png": "image/png", ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
+    ".svg": "image/svg+xml", ".ico": "image/x-icon", ".woff": "font/woff",
+    ".woff2": "font/woff2", ".ttf": "font/ttf", ".otf": "font/otf",
+    ".eot": "application/vnd.ms-fontobject", ".map": "application/json",
+    ".webmanifest": "application/manifest+json", ".xml": "application/xml",
+}
+
+
+def _shq(s: str) -> str:
+    """Single-quote a string for safe embedding in an sh -c command."""
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
+def _fetch_in_container(node: str, url: str) -> dict:
+    """curl the URL from inside a lab PC container, byte-capped and time-bounded.
+
+    Returns {exit, body(bytes), command, container}. The `head -c` cap is the
+    real OOM guard — curl --max-filesize only trusts Content-Length, which a
+    chunked/streaming response omits, so we bound the pipe itself."""
+    container = f"clab-{_active_scenario.name}-{node}"
+    inner = (
+        f"curl -sSL --compressed --max-redirs 5 --max-time {PROXY_TIMEOUT_S} "
+        f"-A {_shq(_PROXY_UA)} -o - {_shq(url)} 2>/dev/null | head -c {PROXY_MAX_BYTES}"
+    )
+    cmd = ["docker", "exec", container, "sh", "-c", inner]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=PROXY_TIMEOUT_S + 6)
+        return {"exit": proc.returncode, "body": proc.stdout,
+                "command": f"curl {url}", "container": container}
+    except subprocess.TimeoutExpired:
+        return {"exit": 124, "body": b"", "command": f"curl {url}", "container": container}
+
+
+def _proxy_url(node: str, abs_url: str, as_hint: str = "") -> str:
+    q = f"/proxy/{quote(node)}?url={quote(abs_url, safe='')}"
+    return q + (f"&as={as_hint}" if as_hint else "")
+
+
+# href/src/action="..." (quoted) and CSS url(...) — enough to reroute the
+# stylesheets, scripts, images and fonts that make a page look right.
+_ATTR_RE = re.compile(r"""(?P<attr>\b(?:href|src|action|poster)\s*=\s*)(?P<q>["'])(?P<url>[^"']*)(?P=q)""", re.I)
+_SRCSET_RE = re.compile(r"""(\bsrcset\s*=\s*)(["'])(.*?)(\2)""", re.I | re.S)
+_CSSURL_RE = re.compile(r"""url\(\s*(['"]?)([^'")]+)\1\s*\)""", re.I)
+
+
+def _rewrite_html(node: str, base_url: str, html: str) -> str:
+    def abs_of(u: str) -> str | None:
+        u = u.strip()
+        if not u or u.startswith(("data:", "mailto:", "javascript:", "tel:", "#", "blob:", "about:")):
+            return None
+        return urljoin(base_url, u)
+
+    def attr_sub(m: "re.Match") -> str:
+        au = abs_of(m.group("url"))
+        if au is None:
+            return m.group(0)
+        # Hint the content type for the two that browsers are strict about.
+        low = m.group("url").lower()
+        as_hint = "style" if (m.group("attr").lower().startswith("href") and (".css" in low or "css" in low)) else ""
+        if m.group("attr").lower().startswith("src") and (".js" in low or "js" in low):
+            as_hint = "script"
+        return f'{m.group("attr")}{m.group("q")}{_proxy_url(node, au, as_hint)}{m.group("q")}'
+
+    def srcset_sub(m: "re.Match") -> str:
+        parts = []
+        for cand in m.group(3).split(","):
+            cand = cand.strip()
+            if not cand:
+                continue
+            bits = cand.split(None, 1)
+            au = abs_of(bits[0])
+            if au is None:
+                parts.append(cand)
+            else:
+                parts.append(_proxy_url(node, au, "image") + (f" {bits[1]}" if len(bits) > 1 else ""))
+        return f"{m.group(1)}{m.group(2)}{', '.join(parts)}{m.group(4)}"
+
+    def css_sub(m: "re.Match") -> str:
+        au = abs_of(m.group(2))
+        return m.group(0) if au is None else f"url({_proxy_url(node, au)})"
+
+    # <link rel=stylesheet href=...> is matched by attr_sub with the css hint;
+    # <script src=...> with the js hint. Do srcset first so its src= inside
+    # isn't double-touched.
+    html = _SRCSET_RE.sub(srcset_sub, html)
+    html = _ATTR_RE.sub(attr_sub, html)
+    html = _CSSURL_RE.sub(css_sub, html)
+    # Neutralise <base> tags: they would re-point relative URLs we already
+    # rewrote (and any we missed) back at the real origin, which the sandbox
+    # then blocks — leaving the page unstyled.
+    html = re.sub(r"<base\b[^>]*>", "", html, flags=re.I)
+    footer = (
+        "<div style=\"position:fixed;left:0;right:0;bottom:0;z-index:2147483647;"
+        "font:11px/1.6 monospace;background:#0f172a;color:#94a3b8;padding:2px 8px;"
+        "opacity:.9\">served live from container "
+        f"<b style=\"color:#e2e8f0\">{node}</b> &middot; every asset fetched inside the lab PC</div>"
+    )
+    if "</body>" in html.lower():
+        idx = html.lower().rfind("</body>")
+        html = html[:idx] + footer + html[idx:]
+    else:
+        html += footer
+    return html
+
+
+@app.get("/proxy/{node}")
+def proxy(node: str, url: str, request: Request):
+    """Fetch `url` from inside lab PC `node` and serve it same-origin, rewriting
+    HTML so its CSS/JS/images load through this proxy too. The `as` query param
+    hints the content type for stylesheet/script/image sub-requests — read raw
+    because `as` is a Python keyword and can't be a function parameter name."""
+    as_hint = request.query_params.get("as", "")
+    if _active_scenario is None:
+        return Response("No lab is running.", status_code=400)
+    src = next((n for n in _active_scenario.nodes if n.id == node), None)
+    if src is None or src.role != "pc":
+        return Response("Browsing source must be a lab PC.", status_code=400)
+
+    raw = url.strip()
+    if "://" not in raw:
+        raw = f"http://{raw}"
+    parts = urlsplit(raw)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return Response(f"Not a valid http/https URL: {url}", status_code=400)
+
+    result = _fetch_in_container(node, raw)
+    body: bytes = result["body"]
+
+    # Failed fetch (blocked by a firewall, timeout, refused): return a styled
+    # error page so the iframe shows the block clearly — the demo's payoff.
+    if result["exit"] != 0 or not body:
+        host = parts.hostname
+        page = f"""<!doctype html><html><head><meta charset=utf-8><title>Can't reach {host}</title>
+<style>body{{font:16px system-ui,sans-serif;color:#334155;background:#f8fafc;height:100vh;margin:0;
+display:flex;align-items:center;justify-content:center}}.b{{max-width:30rem;text-align:center;padding:2rem}}
+.i{{font-size:3rem;color:#cbd5e1}}code{{background:#f1f5f9;border:1px solid #e2e8f0;border-radius:4px;padding:2px 6px;font-size:.85em}}</style>
+</head><body><div class=b><div class=i>&#9888;</div><h2>This site can't be reached</h2>
+<p><code>{host}</code> took too long to respond or the connection was refused.</p>
+<p style="font-size:.85em;color:#64748b">The request really ran inside <b>{node}</b> and was dropped on
+the network path — this is what an active firewall block looks like.</p></div></body></html>"""
+        return Response(page, media_type="text/html; charset=utf-8")
+
+    # Decide content type. Top-level documents are HTML; sub-resources use the
+    # hint (strict for css/js) then the URL extension, then a light sniff.
+    path = parts.path.lower()
+    ext = "." + path.rsplit(".", 1)[-1] if "." in path.rsplit("/", 1)[-1] else ""
+    looks_html = body[:512].lstrip()[:1].lower() in (b"<",) and (
+        b"<html" in body[:2048].lower() or b"<!doctype" in body[:512].lower()
+    )
+    if as_hint == "style":
+        ctype = "text/css; charset=utf-8"
+    elif as_hint == "script":
+        ctype = "text/javascript; charset=utf-8"
+    elif ext in _CT_BY_EXT:
+        ctype = _CT_BY_EXT[ext]
+    elif as_hint == "image" or body[:4] in (b"\x89PNG", b"GIF8") or body[:3] == b"\xff\xd8\xff":
+        ctype = "image/png" if body[:4] == b"\x89PNG" else ("image/gif" if body[:4] == b"GIF8" else "image/jpeg")
+    elif looks_html or (not ext and not as_hint):
+        ctype = "text/html; charset=utf-8"
+    else:
+        ctype = "application/octet-stream"
+
+    if ctype.startswith("text/html"):
+        html = body.decode("utf-8", errors="replace")
+        html = _rewrite_html(node, raw, html)
+        return Response(html, media_type="text/html; charset=utf-8")
+    if ctype.startswith("text/css"):
+        css = body.decode("utf-8", errors="replace")
+        # Rewrite url(...) inside CSS so background images / @font-face resolve.
+        css = _CSSURL_RE.sub(
+            lambda m: (lambda au: m.group(0) if au is None else f"url({_proxy_url(node, au)})")(
+                None if (not m.group(2).strip() or m.group(2).startswith("data:"))
+                else urljoin(raw, m.group(2).strip())
+            ),
+            css,
+        )
+        return Response(css, media_type="text/css; charset=utf-8")
+    return Response(content=body, media_type=ctype)
+
+
 class BrowseRequest(BaseModel):
     node: str  # the lab PC doing the browsing
     url: str   # http[s]://<host>[:port][/path] — lab hosts OR the real internet
@@ -533,26 +760,33 @@ def browse(req: BrowseRequest) -> dict:
         host if host in ip_map else aliases.get(host) or by_ip.get(host) or "internet"
     )
 
-    cmd = ["wget", "-q", "-O", "-", "-T", "6", raw_url]
-    if parts.scheme == "https":
-        # weblab's cert is self-signed (generated at image build).
-        cmd.insert(1, "--no-check-certificate")
+    # Byte-cap the fetch so a huge/streaming response can't OOM the worker
+    # (bearingpoint.com crashed the backend this way — point 10). `head -c`
+    # bounds the pipe itself; the GUI uses this only for reachability/metadata
+    # and renders the real page through /proxy.
+    tls = "--no-check-certificate " if parts.scheme == "https" else ""
+    inner = f"wget -q -O - -T 6 {tls}{_shq(raw_url)} | head -c 2000000"
+    cmd = ["sh", "-c", inner]
     started = time.monotonic()
     result = topology.exec(_active_scenario.name, req.node, cmd)
     elapsed = round(time.monotonic() - started, 2)
 
-    ok = result["exit"] == 0
+    # The pipe to `head` makes the shell's exit code head's (0), so reachability
+    # is judged by whether any bytes came back: a firewall DROP / timeout yields
+    # an empty body. This is what drives the GUI's "can't be reached" panel.
+    body = result["stdout"] or ""
+    ok = bool(body.strip())
     return {
         "ok": ok,
         "exit": result["exit"],
-        "html": result["stdout"] if ok else None,
-        "error": None if ok else (result["stderr"].strip() or f"wget exited {result['exit']}"),
+        "html": body if ok else None,
+        "error": None if ok else (result["stderr"].strip() or "no response — the request was dropped or timed out"),
         "elapsed_s": elapsed,
         "url": raw_url,
         "node": req.node,
         "server_node": server_node,
         "container": result["container"],
-        "command": " ".join(cmd),
+        "command": f"wget {raw_url}",
     }
 
 
@@ -789,7 +1023,10 @@ def chat(req: ChatRequest) -> dict:
             f"done_reason={ollama_resp.get('done_reason')!r}",
             flush=True,
         )
-        if iteration > 0 and not tool_calls and not msg.get("content"):
+        if not tool_calls and not msg.get("content"):
+            # Fires on iteration 0 too: the "explain the topology" bug is an
+            # EMPTY reply on the very first turn (the model answers nothing and
+            # calls no tool), so gating this on iteration>0 hid the actual case.
             print(
                 f"[chat] iter={iteration} FULL RESPONSE (empty content + no tool calls): "
                 f"{json.dumps(ollama_resp, default=str)[:2000]}",
@@ -805,9 +1042,35 @@ def chat(req: ChatRequest) -> dict:
             false_claim = bool(
                 not all_tool_results and _ACTION_CLAIM_RE.search(assistant_content)
             )
-            if (not_english or false_claim) and corrective_retries < MAX_CORRECTIVE_RETRIES:
+            # Empty-reply guard (point 1): some models (observed: "explain the
+            # topology" as a FIRST turn) return no content AND no tool call —
+            # the GUI then shows a blank bubble. Retry with a nudge to either
+            # call describe_state or actually answer. Only when nothing has run
+            # this turn (an empty final content after real tool rounds is fine —
+            # the tool results already answered).
+            empty_reply = not assistant_content.strip() and not all_tool_results
+            if (not_english or false_claim or empty_reply) and corrective_retries < MAX_CORRECTIVE_RETRIES:
                 corrective_retries += 1
                 iteration += 1
+                if empty_reply:
+                    reason = "empty reply"
+                    messages.append({
+                        "role": "user",
+                        "content": "Your previous reply was empty. If I asked about "
+                                   "the network topology or its state, call the "
+                                   "describe_state tool and then explain the result "
+                                   "in plain English. Otherwise, answer my question "
+                                   "directly in English. Never reply with nothing.",
+                    })
+                    print(
+                        f"[chat] iter={iteration} REJECTED response (empty reply) — "
+                        f"corrective retry {corrective_retries}/{MAX_CORRECTIVE_RETRIES}",
+                        flush=True,
+                    )
+                    interaction["prose_response"] = "[retracted: empty reply]"
+                    interaction["execution_success"] = True
+                    metrics.record(interaction)
+                    continue
                 if not_english:
                     reason = "response not in English"
                     # Keep the draft visible — the model must translate it.
@@ -854,6 +1117,15 @@ def chat(req: ChatRequest) -> dict:
                     "perform the action."
                 )
                 print("[chat] retries exhausted — false-claim disclaimer appended", flush=True)
+
+            if not assistant_content.strip() and not all_tool_results:
+                # Empty reply survived the retries: never return a blank bubble.
+                assistant_content = (
+                    "I didn't produce a reply for that. Could you rephrase? "
+                    "For example, ask me to \"describe the network\" and I'll show "
+                    "the current topology and firewall state."
+                )
+                print("[chat] retries exhausted — empty-reply fallback appended", flush=True)
 
             interaction["prose_response"] = assistant_content
             interaction["execution_success"] = True

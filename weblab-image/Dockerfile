@@ -18,7 +18,7 @@ FROM nginx:alpine
 # lynx: a real terminal web browser, usable from the live console shell
 # (`lynx http://example.com`) — the undeniably-real complement to the GUI
 # Browser tab (supervisor request 2026-08-25).
-RUN apk add --no-cache openssl socat lynx \
+RUN apk add --no-cache openssl socat lynx curl \
     && mkdir -p /etc/nginx/certs \
     && openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
         -keyout /etc/nginx/certs/server.key \

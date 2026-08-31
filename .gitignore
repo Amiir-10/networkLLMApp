@@ -12,3 +12,11 @@ scripts/showcase-password
 wheelhouse/
 images-cache/
 tools-cache/
+
+# AI-assistant / personal instruction files — not for the shared remote
+CLAUDE.md
+AGENTS.md
+.claude/
+docs/RUNBOOK-SHOWCASE.md
+docs/RUNBOOK-VAST-TUNNEL.md
+docs/RUNBOOK-VAST-VM.md

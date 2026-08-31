@@ -126,7 +126,7 @@ fi
 
 # ─── 5. Lab images ───────────────────────────────────────────────
 step "Lab docker images"
-for spec in "firewalld-fw:latest firewall-image" "weblab:latest weblab-image"; do
+for spec in "firewalld-fw:latest firewall-image" "weblab:latest weblab-image" "weblab-vuln:latest weblab-vuln-image"; do
   read -r tag dir <<<"$spec"
   if docker image inspect "$tag" >/dev/null 2>&1; then
     ok "$tag present"

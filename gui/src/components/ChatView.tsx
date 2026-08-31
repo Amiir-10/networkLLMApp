@@ -7,6 +7,7 @@ interface Props {
   topology: BuiltTopology | null;
   labReady: boolean;
   dropRules: ParsedRule[];
+  vulnerableNodes: string[];
   pingEvent: PingEvent | null;
   onPingEventComplete: () => void;
   model: string;
@@ -23,6 +24,7 @@ export default function ChatView({
   topology,
   labReady,
   dropRules,
+  vulnerableNodes,
   pingEvent,
   onPingEventComplete,
   model,
@@ -44,6 +46,7 @@ export default function ChatView({
             topology={topology}
             labReady={labReady}
             dropRules={dropRules}
+            vulnerableNodes={vulnerableNodes}
             pingEvent={pingEvent}
             onPingEventComplete={onPingEventComplete}
           />

@@ -97,6 +97,21 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "run_command",
+            "description": "Run a shell command INSIDE a lab PC's container (real docker exec) and return its stdout/stderr/exit code. Use this to inspect or FIX a PC — for example to upgrade an outdated, vulnerable package after a vulnerability_scan flags it. Only PC nodes are allowed (not firewalls, routers, or switches). Every command is shown to the user. To fix an outdated Alpine package (e.g. OpenSSL 1.1.1 on pc1a), point apk at a current branch and upgrade: sh -c 'sed -i \"s|/v3.14/|/v3.20/|g\" /etc/apk/repositories && apk update && apk upgrade --no-cache --available'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node": {"type": "string", "description": "The PC node id to run inside (e.g. pc1a)."},
+                    "command": {"type": "string", "description": "The shell command to run, e.g. \"openssl version\" or a full 'sh -c ...' upgrade line."},
+                },
+                "required": ["node", "command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "vulnerability_scan",
             "description": "Run a security vulnerability scan on one or more nodes' container images. Reports CVEs, CIS Docker benchmark issues, hardcoded secrets, and supply-chain risks. Use when the user asks to scan, audit, or check the security/vulnerabilities of a node. The target is a single node id (e.g. 'pc1'), several node ids separated by commas/spaces (e.g. 'pc1, pc2, fw'), or the word 'all' to scan every node. Nodes sharing the same image are scanned only once.",
             "parameters": {
@@ -274,16 +289,96 @@ def alias_map(scenario: Scenario) -> dict[str, str]:
     return result
 
 
+# ── Vulnerable-node detection (the demo's "one vulnerable PC" — point 12) ──
+# A node is flagged vulnerable when the OpenSSL it actually runs is the EOL 1.x
+# series (weblab-vuln = Alpine 3.14 / OpenSSL 1.1.1, which genuinely carries
+# CVE-2024-5535 etc.). This is read live from the RUNNING container, so an
+# in-container `apk upgrade` (via run_command) that moves OpenSSL to 3.x clears
+# the flag on the next check — nothing simulated. Only PCs are checked, and
+# only the cost of one `openssl version` exec per PC.
+_OPENSSL_VER_RE = re.compile(r"OpenSSL\s+(\d+)\.(\d+)\.(\d+)", re.I)
+_ALPINE_FIX_CMD = (
+    "sh -c 'sed -i \"s|/v3.14/|/v3.20/|g\" /etc/apk/repositories "
+    "&& apk update && apk upgrade --no-cache --available'"
+)
+# Only images we deliberately ship with an old package are watched — so the
+# vulnerability check runs at most ONE container exec (pc1a), never a probe of
+# every PC (a slow/unhealthy container would otherwise stall the GUI's
+# /vulnerable poll for up to docker_exec's timeout per node).
+_WATCHED_IMAGE_MARKER = "weblab-vuln"
+
+
+def node_vuln_status(scenario: Scenario, topology, node_id: str) -> dict | None:
+    """Live vulnerability status for one WATCHED PC, or None if the node is not
+    a watched-image PC / the probe fails. Keys: vulnerable, package, installed,
+    severity, cve_example, fix_hint."""
+    node = next((n for n in scenario.nodes if n.id == node_id), None)
+    if node is None or node.role != "pc":
+        return None
+    if _WATCHED_IMAGE_MARKER not in (node.image or ""):
+        return None  # not a deliberately-vulnerable host — skip the exec entirely
+    try:
+        r = topology.exec(scenario.name, node_id, ["openssl", "version"])
+    except Exception:
+        return None
+    m = _OPENSSL_VER_RE.search((r.get("stdout") or "") + (r.get("stderr") or ""))
+    if not m:
+        return None  # no openssl binary (e.g. a postgres PC) — not our watched host
+    major = int(m.group(1))
+    installed = f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
+    vulnerable = major < 3  # OpenSSL 1.x/2.x are EOL
+    status = {
+        "node": node_id,
+        "vulnerable": vulnerable,
+        "package": "openssl",
+        "installed": installed,
+    }
+    if vulnerable:
+        status.update({
+            "severity": "CRITICAL",
+            "cve_example": "CVE-2024-5535",
+            "fix_hint": f"run_command on {node_id}: {_ALPINE_FIX_CMD}",
+        })
+    return status
+
+
+# Nodes the user has actually run a scan on this lab session. A node is only
+# painted "(vulnerable)" in the GUI AFTER it has been scanned — so the topology
+# looks normal until the user asks for a scan, then the flagged node turns red,
+# and it returns to normal once the LLM fixes it. Cleared on lab start/stop/reset.
+SCANNED_NODES: set[str] = set()
+
+
+def vulnerable_nodes(scenario: Scenario, topology) -> list[str]:
+    """Node ids currently flagged vulnerable — the GUI reads this to paint them
+    red. Only nodes that have BEEN SCANNED this session are considered, so
+    nothing is red until the user runs a scan (and a fixed node clears). Costs
+    at most one container exec (only watched-image scanned nodes are probed)."""
+    out: list[str] = []
+    for nid in SCANNED_NODES:
+        st = node_vuln_status(scenario, topology, nid)
+        if st and st.get("vulnerable"):
+            out.append(nid)
+    return out
+
+
 def validate_node_args(args: dict, scenario: Scenario) -> str | None:
-    """Validate src/dst against the scenario — and canonicalize aliases IN PLACE
-    (a user says "block example.com"; the model passes it through) so every
-    downstream consumer sees the real node id, deterministically.
+    """Validate src/dst (and run_command's `node`) against the scenario — and
+    canonicalize aliases IN PLACE (a user says "block example.com"; the model
+    passes it through) so every downstream consumer sees the real node id,
+    deterministically.
 
     `dst` may additionally be a PUBLIC INTERNET hostname or IP (the lab has a
     real, firewalled internet uplink): it is normalized in place (scheme/path/
     port stripped, lowercased) and left for dispatch_tool to resolve. `src`
     must always be a lab node — traffic originates inside the lab."""
     node_ids = {n.id for n in scenario.nodes}
+    # run_command targets a single PC via `node`; validate it like a lab node.
+    if "node" in args and "src" not in args and "dst" not in args:
+        val = str(args.get("node", "")).strip()
+        if val not in node_ids:
+            return f"Unknown node '{args.get('node')}'. Valid nodes: {sorted(node_ids)}"
+        return None
     aliases = alias_map(scenario)
     for field in ("src", "dst"):
         val = args.get(field)
@@ -372,6 +467,35 @@ def dispatch_tool(
         rules = security.list_rules()
         return {"topology": nodes_info, "firewall_rules": rules}
 
+    elif name == "run_command":
+        # Real shell INTO a PC container (docker exec). PCs only — a bad command
+        # on a firewall/router could break routing or firewalld mid-demo.
+        node_id = args["node"]
+        node = next((n for n in scenario.nodes if n.id == node_id), None)
+        if node is None:
+            return {"error": f"Unknown node '{node_id}'."}
+        if node.role != "pc":
+            pcs = sorted(n.id for n in scenario.nodes if n.role == "pc")
+            return {"error": f"run_command only runs on PCs (not a {node.role}). Valid: {pcs}"}
+        command = str(args.get("command", "")).strip()
+        if not command:
+            return {"error": "No command given."}
+        # Run through a shell so pipelines / && / sed quoting work as written.
+        result = topology.exec(scenario.name, node_id, ["sh", "-c", command])
+        out = {
+            "node": node_id,
+            "command": command,
+            "exit": result.get("exit"),
+            "stdout": (result.get("stdout") or "")[-4000:],
+            "stderr": (result.get("stderr") or "")[-2000:],
+        }
+        # Surface the resulting vulnerability status so the model can confirm a
+        # fix worked (and the acceptance guard sees a real state change).
+        st = node_vuln_status(scenario, topology, node_id)
+        if st is not None:
+            out["vuln_status"] = st
+        return out
+
     elif name == "vulnerability_scan":
         # Parse the target string deterministically in the backend — llama3.1:8b
         # won't reliably emit a JSON array, so the tool schema stays a single
@@ -400,6 +524,19 @@ def dispatch_tool(
         for s in result["scans"]:
             s["nodes"] = nodes_for_image.get(s.get("image"), [])
         result["targets"] = node_ids
+        # Remember which nodes have been scanned, so the GUI only flags a node
+        # "(vulnerable)" after the user actually scans it (not on lab start).
+        SCANNED_NODES.update(node_ids)
+        # Per-node live vulnerability status (the "one vulnerable PC" story):
+        # drives the red "(vulnerable)" label in the GUI, and tells the model
+        # exactly which node to fix and how.
+        node_status = [
+            st for nid in node_ids
+            if (st := node_vuln_status(scenario, topology, nid)) is not None
+        ]
+        if node_status:
+            result["node_status"] = node_status
+            result["vulnerable_nodes"] = [s["node"] for s in node_status if s["vulnerable"]]
         return result
 
     return {"error": f"Unknown tool: {name}"}

@@ -238,3 +238,16 @@ export async function browse(node: string, url: string): Promise<BrowseResponse>
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+// Same-origin URL the Browser tab's <iframe src> points at: the backend fetches
+// the page (and its CSS/JS/images) from inside the PC and serves them back with
+// URLs rewritten through this proxy, so a real site renders with styling+scripts.
+export function proxyUrl(node: string, url: string): string {
+  return `${BASE}/proxy/${encodeURIComponent(node)}?url=${encodeURIComponent(url)}`;
+}
+
+export async function fetchVulnerable(): Promise<string[]> {
+  const res = await fetch(`${BASE}/vulnerable`);
+  if (!res.ok) return [];
+  return (await res.json()).vulnerable ?? [];
+}

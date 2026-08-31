@@ -18,6 +18,25 @@ DOCKERSCAN_BIN = os.environ.get(
     "DOCKERSCAN_BIN", os.path.expanduser("~/.local/bin/dockerscan")
 )
 
+
+def _scan_env() -> dict:
+    """Environment for the dockerscan subprocess.
+
+    dockerscan reads its CVE database from `~/.dockerscan/cve-db.sqlite` via
+    Go's os.UserHomeDir(), which FAILS with "user home directory not defined"
+    when HOME is unset — exactly what happens under systemd (the showcase
+    backend). Derive HOME from the binary's own location (`.../.local/bin/
+    dockerscan` → the home dir two levels up) so the scan works whether or not
+    the service manager set HOME."""
+    env = dict(os.environ)
+    if not env.get("HOME"):
+        # ~/.local/bin/dockerscan -> parents[2] == ~
+        try:
+            env["HOME"] = str(Path(DOCKERSCAN_BIN).resolve().parents[2])
+        except IndexError:
+            env["HOME"] = "/root"
+    return env
+
 # Severity ordering so the summary surfaces the worst findings first.
 _SEV_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
 
@@ -38,7 +57,8 @@ def run_image_scan(image: str, timeout: int = 180) -> dict:
         cmd = [DOCKERSCAN_BIN, "-q", image]
         try:
             proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=timeout, cwd=tmp
+                cmd, capture_output=True, text=True, timeout=timeout, cwd=tmp,
+                env=_scan_env(),
             )
         except subprocess.TimeoutExpired:
             return {"error": f"scan timed out after {timeout}s", "image": image}

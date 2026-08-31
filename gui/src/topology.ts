@@ -153,10 +153,28 @@ export function buildTopology(graph: ScenarioGraph): BuiltTopology {
   }
   dagre.layout(g);
 
-  const pos: Record<string, { x: number; y: number }> = {};
+  const center: Record<string, { x: number; y: number }> = {};
   for (const n of nodes) {
     const p = g.node(n.id); // dagre gives center coords
-    pos[n.id] = { x: p.x - NODE_W / 2, y: p.y - NODE_H / 2 };
+    center[n.id] = { x: p.x, y: p.y };
+  }
+  // Centre the WAN-Interconnect / IXP node horizontally between the two routers
+  // it joins (supervisor point 7: "the IXP link to the router is not centred").
+  // Dagre places a node joining two same-rank neighbours by barycentre, which
+  // the PC fan-out on either site can pull off-centre; align it to the mean x
+  // of its router neighbours so its two uplinks are symmetric.
+  for (const n of nodes) {
+    if (n.role !== "switch") continue;
+    const routerNeighbours = [...(adjacency[n.id] ?? [])].filter((id) => byId[id]?.role === "router");
+    if (routerNeighbours.length >= 2) {
+      center[n.id].x =
+        routerNeighbours.reduce((s, id) => s + center[id].x, 0) / routerNeighbours.length;
+    }
+  }
+
+  const pos: Record<string, { x: number; y: number }> = {};
+  for (const n of nodes) {
+    pos[n.id] = { x: center[n.id].x - NODE_W / 2, y: center[n.id].y - NODE_H / 2 };
   }
 
   // ── Device nodes ──────────────────────────────────────────────────────────
