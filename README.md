@@ -40,6 +40,44 @@ To stop everything (backend, GUI, and any running lab):
 ./shutdown.sh
 ```
 
+## Running on a cloud instance (one shareable link)
+
+The whole stack (GUI + backend + lab + Ollama) can be hosted on a rented GPU VM — vast.ai, Azure, or any Ubuntu 22.04+ VM you can SSH into as root — producing a single password-protected URL that works from any browser.
+
+**Instance requirements:** a real VM (not a container — the lab needs Docker + containerlab inside), ≥ 16 GB GPU VRAM, ≥ 32 GB RAM, ≥ 60 GB disk. On vast.ai: pick the *Ubuntu 22.04 VM* template, filter offers with `vms_enabled=true`, and add `-p 8000:8000` to the docker options **at creation time** (the open port cannot be added later).
+
+**1. Point the repo at the instance** (on your PC):
+
+```bash
+cp scripts/vast-instance.env.example scripts/vast-instance.env
+# edit it: SSH_HOST / SSH_PORT from the instance's SSH command
+```
+
+**2. Deploy — one command:**
+
+```bash
+scripts/vast-showcase.sh up qwen2.5:14b        # model and scenario are optional args
+```
+
+This builds the GUI locally, rsyncs the repo, installs the full stack on the instance (Docker, containerlab, Python, Ollama + model, lab images), starts the backend as a systemd service, deploys the lab, and prints the link plus a password. Idempotent — re-run it after any failure or code change. First run takes 10–30 min; later runs are minutes. Log in with any username and the printed password (kept in `scripts/showcase-password`, gitignored).
+
+**3. HTTPS link on port 443** (for networks that only pass 80/443):
+
+```bash
+scripts/vast-showcase.sh tunnel
+```
+
+Starts a Cloudflare quick tunnel on the instance and prints an `https://….trycloudflare.com` URL fronting the app. The URL changes on every tunnel restart, so generate it shortly before sharing. Note: free quick tunnels cap each request at ~100 s, so keep individual chat actions short (e.g. scan one node at a time, not `all`).
+
+**Other commands:**
+
+```bash
+scripts/vast-showcase.sh status   # health check + print the URL again
+scripts/vast-showcase.sh down     # stop the app + lab on the instance
+```
+
+`down` stops the services but the instance keeps billing — destroy it in the provider's console when finished.
+
 ## Architecture
 
 ```
